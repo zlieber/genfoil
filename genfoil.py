@@ -12,6 +12,90 @@ A3 = -0.3516
 A4 = 0.2843
 A5 = -0.1015
 
+class StlWriter:
+    def __init__(self, stream):
+        self.out = stream
+        self.write_header()
+
+    def write_header(self):
+        self.out.write("solid airfoil\n")
+
+    def close(self):
+        out.write("endsolid airfoil\n")
+
+    def unit_normal(self, v1, v2, v3):
+        """Calculates unit normal vector for the plane
+           defined by the 3 points.
+        """
+        vec1 = numpy.subtract(v2, v1)
+        vec2 = numpy.subtract(v3, v1)
+        normal = numpy.cross(vec1, vec2).tolist()
+        normal_len = numpy.linalg.norm(normal)
+        if (abs(normal_len) < 0.000001):
+            return None
+        return numpy.multiply(normal, 1.0/normal_len);
+
+    def triangle(self, pt1, pt2, pt3):
+        """Generates a single STL triangle based on 3 3D poitns.
+        """
+
+        un = self.unit_normal(pt1, pt2, pt3)
+        if (un is None):
+            return
+
+        self.out.write("facet normal %f %f %f\n" % (un[0], un[1], un[2]))
+        self.out.write("    outer loop\n")
+        self.out.write("        vertex %f %f %f\n" % pt1)
+        self.out.write("        vertex %f %f %f\n" % pt2)
+        self.out.write("        vertex %f %f %f\n" % pt3)
+        self.out.write("    endloop\n")
+        self.out.write("endfacet\n")
+
+    def quad(self, pt1, pt2, pt3, pt4):
+        """Generates a rectangle based on 4 3D points.
+
+        Does this by generating 2 triangles."""
+
+        self.triangle(pt1, pt2, pt3)
+        self.triangle(pt1, pt3, pt4)
+
+    def connect_curves(self, prev_curve, prev_distance, next_curve, next_distance):
+        """Output triangles connecting two curves into a surface.
+        """
+
+        total_points_prev = len(prev_curve)
+        total_points_next = len(next_curve)
+        total_points_ratio = float(total_points_prev) / total_points_next
+        running_ratio = 1.0
+        done = False
+        last_point_prev = 0
+        last_point_next = 0
+        while (last_point_prev + 1 < len(prev_curve) or
+               last_point_next + 1 < len(next_curve)):
+
+            take_next = running_ratio > total_points_ratio
+            if (last_point_next + 1 >= len(next_curve)):
+                take_next = False
+            if (last_point_prev + 1 >= len(prev_curve)):
+                take_next = True
+
+            # Choose the curve from which to take the next point
+            if (take_next):
+                # Take point from "next" curve
+                self.triangle(
+                    next_curve[last_point_next+1] + (next_distance,),
+                    prev_curve[last_point_prev] + (prev_distance,),
+                    next_curve[last_point_next] + (next_distance,))
+                last_point_next += 1
+            else:
+                # Take point from "prev" curve
+                self.triangle(
+                    prev_curve[last_point_prev+1] + (prev_distance,),
+                    prev_curve[last_point_prev] + (prev_distance,),
+                    next_curve[last_point_next] + (next_distance,))
+                last_point_prev += 1
+            running_ratio = float(last_point_prev+1) / (last_point_next+1)
+
 def calcy(x):
     """Calculate a single airfoil point.
 
@@ -147,67 +231,32 @@ def curve(step):
         yield (x, y)
     yield (C_PARAM, calcy(C_PARAM))
 
-def unit_normal(v1, v2, v3):
-    """Calculates unit normal vector for the plane
-       defined by the 3 points.
-    """
-    vec1 = numpy.subtract(v2, v1)
-    vec2 = numpy.subtract(v3, v1)
-    normal = numpy.cross(vec1, vec2).tolist()
-    normal_len = numpy.linalg.norm(normal)
-    if (abs(normal_len) < 0.000001):
-        return None
-    return numpy.multiply(normal, 1.0/normal_len);
 
-def triangle(pt1, pt2, pt3):
-    """Generates a single STL triangle based on 3 3D poitns.
-    """
-
-    un = unit_normal(pt1, pt2, pt3)
-    if (un is None):
-        return
-
-    out.write("facet normal %f %f %f\n" % (un[0], un[1], un[2]))
-    out.write("    outer loop\n")
-    out.write("        vertex %f %f %f\n" % pt1)
-    out.write("        vertex %f %f %f\n" % pt2)
-    out.write("        vertex %f %f %f\n" % pt3)
-    out.write("    endloop\n")
-    out.write("endfacet\n")
-
-def quad(pt1, pt2, pt3, pt4):
-    """Generates a rectangle based on 4 3D points.
-
-    Does this by generating 2 triangles."""
-
-    triangle(pt1, pt2, pt3)
-    triangle(pt1, pt3, pt4)
-
-def triangles(prevx, prevy, x, y):
+def triangles(writer, prevx, prevy, x, y):
     """Generates a set of triangles for the curve.
 
     Args:
+      writer: stl writer to use.
       prevx, prevy: previous point on the curve.
       x, y: current point on the curve."""
 
     # working surface
-    quad((prevx, 0, prevy),
+    writer.quad((prevx, 0, prevy),
          (prevx, THICKNESS, prevy),
          (x, THICKNESS, y),
          (x, 0, y))
 
     # top side
-    quad((prevx, THICKNESS, prevy),
+    writer.quad((prevx, THICKNESS, prevy),
          (prevx, THICKNESS, HEIGHT),
          (x, THICKNESS, HEIGHT),
          (x, THICKNESS, y))
 
     # bottom side
-    quad((x, 0, y),
+    writer.quad((x, 0, y),
          (x, 0, HEIGHT),
          (prevx, 0, HEIGHT),
          (prevx, 0, prevy))
-
 
 def stl_template(step, inv):
     """Generates the STL shape.
@@ -217,7 +266,7 @@ def stl_template(step, inv):
 
     max_thickness = T_PARAM * C_PARAM
 
-    out.write("solid airfoil\n")
+    writer = StlWriter(out)
 
     if inv:
         z_start = max_thickness
@@ -225,22 +274,22 @@ def stl_template(step, inv):
         z_start = 0
 
     # Left wall
-    quad((0, 0, HEIGHT),
-         (0, THICKNESS, HEIGHT),
-         (0, THICKNESS, z_start),
-         (0, 0, z_start))
+    writer.quad((0, 0, HEIGHT),
+                (0, THICKNESS, HEIGHT),
+                (0, THICKNESS, z_start),
+                (0, 0, z_start))
 
     # Right wall
-    quad((C_PARAM, 0, z_start),
-         (C_PARAM, THICKNESS, z_start),
-         (C_PARAM, THICKNESS, HEIGHT),
-         (C_PARAM, 0, HEIGHT))
+    writer.quad((C_PARAM, 0, z_start),
+                (C_PARAM, THICKNESS, z_start),
+                (C_PARAM, THICKNESS, HEIGHT),
+                (C_PARAM, 0, HEIGHT))
 
     # Back wall
-    quad((0, 0, HEIGHT),
-         (C_PARAM, 0, HEIGHT),
-         (C_PARAM, THICKNESS, HEIGHT),
-         (0, THICKNESS, HEIGHT))
+    writer.quad((0, 0, HEIGHT),
+                (C_PARAM, 0, HEIGHT),
+                (C_PARAM, THICKNESS, HEIGHT),
+                (0, THICKNESS, HEIGHT))
 
     prevx = -1
     prevy = -1
@@ -250,10 +299,10 @@ def stl_template(step, inv):
         if prevx == -1:
             (prevx, prevy) = (x, y)
             continue
-        triangles(prevx, prevy, x, y)
+        triangles(writer, prevx, prevy, x, y)
         (prevx, prevy) = (x, y)
 
-    out.write("endsolid airfoil\n")
+    writer.close()
 
 def getthickness(args):
     """Computes the thickness parameter.
@@ -372,43 +421,6 @@ def curve_point_list_for_distance(r):
     my_curve = [ (x + left, y) for (x, y) in curve(step) ]
     return my_curve
 
-def connect_curves(prev_curve, prev_distance, next_curve, next_distance):
-    """Output triangles connecting two curves into a surface.
-    """
-
-    total_points_prev = len(prev_curve)
-    total_points_next = len(next_curve)
-    total_points_ratio = float(total_points_prev) / total_points_next
-    running_ratio = 1.0
-    done = False
-    last_point_prev = 0
-    last_point_next = 0
-    while (last_point_prev + 1 < len(prev_curve) or
-           last_point_next + 1 < len(next_curve)):
-
-        take_next = running_ratio > total_points_ratio
-        if (last_point_next + 1 >= len(next_curve)):
-            take_next = False
-        if (last_point_prev + 1 >= len(prev_curve)):
-            take_next = True
-
-        # Choose the curve from which to take the next point
-        if (take_next):
-            # Take point from "next" curve
-            triangle(
-                next_curve[last_point_next+1] + (next_distance,),
-                prev_curve[last_point_prev] + (prev_distance,),
-                next_curve[last_point_next] + (next_distance,))
-            last_point_next += 1
-        else:
-            # Take point from "prev" curve
-            triangle(
-                prev_curve[last_point_prev+1] + (prev_distance,),
-                prev_curve[last_point_prev] + (prev_distance,),
-                next_curve[last_point_next] + (next_distance,))
-            last_point_prev += 1
-        running_ratio = float(last_point_prev+1) / (last_point_next+1)
-
 def printstl_airfoil(args):
     global LENGTH, WIDTH, THICKNESS
     global MIN_X, MIN_Y
@@ -428,7 +440,7 @@ def printstl_airfoil(args):
     MAX_Y = 35
     (MAX_X1, MAX_X2) = foil_shape_xx(MAX_Y)
 
-    out.write("solid airfoil\n")
+    writer = StlWriter(out)
     prev_curve = None
     i = 0.0
     count = 0
@@ -441,8 +453,8 @@ def printstl_airfoil(args):
             my_step = numpy.amax([ y for (x, y) in prev_curve])
             i += my_step
             continue
-        connect_curves(prev_curve, i - my_step, next_curve, i)
-        quad(
+        writer.connect_curves(prev_curve, i - my_step, next_curve, i)
+        writer.quad(
             prev_curve[len(prev_curve)-1] + (i - my_step,),
             next_curve[len(next_curve)-1] + (i,),
             next_curve[0] + (i,),
@@ -460,28 +472,28 @@ def printstl_airfoil(args):
         top_curve.insert(0, (0, 0))
         top_curve.append((args.box_width, args.box_thickness))
         top_curve.append((args.box_width, 0))
-        connect_curves(next_curve, LENGTH, top_curve, LENGTH)
-        quad(
+        writer.connect_curves(next_curve, LENGTH, top_curve, LENGTH)
+        writer.quad(
             (0, 0, LENGTH + args.box_length),
             (0, args.box_thickness, LENGTH + args.box_length),
             (0, args.box_thickness, LENGTH),
             (0, 0, LENGTH))
-        quad(
+        writer.quad(
             (0, args.box_thickness, LENGTH + args.box_length),
             (args.box_width, args.box_thickness, LENGTH + args.box_length),
             (args.box_width, args.box_thickness, LENGTH),
             (0, args.box_thickness, LENGTH))
-        quad(
+        writer.quad(
             (args.box_width, 0, LENGTH),
             (args.box_width, args.box_thickness, LENGTH),
             (args.box_width, args.box_thickness, LENGTH + args.box_length),
             (args.box_width, 0, LENGTH + args.box_length))
-        quad(
+        writer.quad(
             (0, 0, LENGTH),
             (args.box_width, 0, LENGTH),
             (args.box_width, 0, LENGTH + args.box_length),
             (0, 0, LENGTH + args.box_length))
-        quad(
+        writer.quad(
             (args.box_width, 0, LENGTH + args.box_length),
             (args.box_width, args.box_thickness, LENGTH + args.box_length),
             (0, args.box_thickness, LENGTH + args.box_length),
@@ -489,8 +501,8 @@ def printstl_airfoil(args):
     else:
         # Back wall
         bottom_straight = [ (x, 0) for (x, y) in next_curve ]
-        connect_curves(next_curve, LENGTH, bottom_straight, LENGTH)
-    out.write("endsolid airfoil\n")
+        writer.connect_curves(next_curve, LENGTH, bottom_straight, LENGTH)
+    writer.close()
 
 parser = argparse.ArgumentParser(description='Generate airfoil data for plotting or 3D printing.')
 
