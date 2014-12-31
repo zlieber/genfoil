@@ -28,6 +28,62 @@ def derivative(func, x):
     result = (after - before) / diffx
     return result
 
+def angular_distance(func, x1, x2):
+    """Computes distance between two points on the airfoil.
+
+    Uses pythagoras theorem.
+
+    Args:
+      x1: first point
+      x2: second point
+
+    Returns:
+      Distance in mm"""
+
+    curr_angle = math.degrees(math.atan(derivative(func, x1)))
+    new_angle = math.degrees(math.atan(derivative(func, x2)))
+    result = abs(curr_angle - new_angle)
+    return result
+
+def findnext(func, x, step, start_delta, minx=None, maxx=None):
+    """Finds next point (x, y) to add to the curve.
+
+    Uses binary search to determine the x value so that the
+    change in derivative is less than the given # of degrees.
+
+    Args:
+      func: function definiing the curve
+      x: starting point
+      step: target angular change
+      start_delta: distance from x for initial guess. May be negative
+      minx: minimum value of x (lower bound).
+
+    Returns
+      Next point on the curve (x, y)."""
+
+    prevdelta = 0
+    delta = start_delta
+    curr = x
+    done = False
+
+    while not done:
+        d = angular_distance(func, x, x + delta)
+        if abs((d - step) / step) < 0.0001:
+            done = True
+        else:
+            if d < step:
+                if minx is None:
+                    newdelta = delta * 2
+                else:
+                    newdelta = (delta + minx - x) / 2
+                    if abs(newdelta - delta) < 1.0e-10:
+                        newdelta = minx - x
+                        done = True
+                prevdelta = delta
+                delta = newdelta
+            else:
+                delta = (delta + prevdelta) / 2
+    return ((x + delta), func((x + delta)))
 
 class StlWriter:
     def __init__(self, stream):
@@ -113,10 +169,11 @@ class StlWriter:
             running_ratio = float(last_point_prev+1) / (last_point_next+1)
 
 class NacaCurve:
-    def __init__(self, chord, curvespec, tail_height=0.0):
+    def __init__(self, chord, curvespec, tail_height=0.0, resolution=1.0):
         self.chord = chord
         self.calc_thickness(curvespec, chord)
         self.c_param = chord
+        self.resolution = resolution
 
         # NACA curve does not converge to zero at the trailing edge.
         # We introduce a minor correction - convergence_param to
@@ -212,57 +269,10 @@ class NacaCurve:
         else:
             return (root2X, root2Y)
 
-    def derivative(self, x):
-        return derivative(self.calcy_converged, x)
-
-    def distance(self, x1, x2):
-        """Computes distance between two points on the airfoil.
-
-        Uses pythagoras theorem.
-
-        Args:
-          x1: first point
-          x2: second point
-
-        Returns:
-          Distance in mm"""
-
-        curr_angle = math.degrees(math.atan(self.derivative(x1)))
-        new_angle = math.degrees(math.atan(self.derivative(x2)))
-        return abs(curr_angle - new_angle)
-
     def findnext(self, x, step):
-        """Finds next point (x, y) to add to the curve.
+        return findnext(self.calcy_converged, x, step, 0.1)
 
-        Uses binary search to determine the x value so that the
-        total distance on the curve is within the resolution.
-
-        Args:
-          x: starting point
-          step: resolution
-
-        Returns
-          Next point on the curve (x, y)."""
-
-        prevdelta = 0
-        delta = 0.1
-        curr = x
-        done = False
-
-        while not done:
-            d = self.distance(x, x + delta)
-            if abs((d - step) / step) < 0.0001:
-                done = True
-            else:
-                if d < step:
-                    newdelta = delta * 2
-                    prevdelta = delta
-                    delta = newdelta
-                else:
-                    delta = (delta + prevdelta) / 2
-        return ((x + delta), self.calcy_converged((x + delta)))
-
-    def curve(self, step):
+    def curve(self):
         """Generates the curve with given step.
 
         Iterable for points (x, y)."""
@@ -272,7 +282,7 @@ class NacaCurve:
         yield (x, y)
 
         while x < self.c_param:
-            (x, y) = self.findnext(x, step)
+            (x, y) = self.findnext(x, self.resolution)
             if (x > self.c_param):
                 break
             yield (x, y)
@@ -280,8 +290,9 @@ class NacaCurve:
 
 class FoilGenerator:
 
-    def __init__(self, stl_writer, length, width, curvespec):
+    def __init__(self, stl_writer, length, width, curvespec, resolution=1.0):
         self.writer = stl_writer
+        self.resolution = resolution
         self.length = length
         self.width = width
         self.box_length = 0
@@ -356,6 +367,12 @@ class FoilGenerator:
                 (self.planform_max_x2 - self.planform_max_x1) *
                 self.width)
 
+    def func_to_foil_y(self, y):
+        """Given y in func coords, return distance from tip r.
+        """
+        return ((y - self.planform_min_y) /
+                (self.planform_max_y - self.planform_min_y) * self.length)
+
     def get_shape_from_to(self, r):
         """Returns the pair (x1, x2) of coordinates for foil shape.
         Arguments:
@@ -370,57 +387,58 @@ class FoilGenerator:
         chord = right - left
         naca = NacaCurve(chord,
                          str(self.thickness * chord / self.width),
-                         tail_height=1.0)
-        my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
+                         tail_height=1.0, resolution = self.resolution)
+        my_curve = [ (x + left, y) for (x, y) in naca.curve() ]
         return my_curve
 
     def find_starting_curve(self):
-        # For tapered planform just find a curve with at least 5 points.
         return 1
+
+    def find_next_curve(self, r):
+        y = self.foil_to_func_y(r)
+        (left, right) = self.foil_shape_xx(y)
+        (x1, y1) = findnext(self.planform_func, left, self.resolution, -1e-9, self.planform_max_x1)
+        (x2, y2) = findnext(self.planform_func, right, self.resolution, 1e-9, self.planform_max_x2)
+        if (y1 > y2):
+            (resx, resy) = (x2, y2)
+        else:
+            (resx, resy) = (x1, y1)
+
+        return self.func_to_foil_y(resy)
 
     def generate_airfoil(self):
         prev_curve = None
         prev_z = 0
 
-        i = self.find_starting_curve()
-        count = 0
-        while count < 2:
-            next_curve = self.curve_point_list_for_distance(i)
-            print "Curve: (%f, %f) - (%f, %f) (%d points)" % (next_curve[0] + next_curve[-1] + (len(next_curve),))
+        z = self.find_starting_curve()
+        while prev_z < z:
+            next_curve = self.curve_point_list_for_distance(z)
+            print "Curve: (%f, %f, %f) - (%f, %f, %f) (%d points)" % (next_curve[0] + (z,) + next_curve[-1] + (z,) + (len(next_curve),))
             if prev_curve is None:
                 prev_curve = next_curve
                 # Front wall
-                bottom_curve = [
-                    (prev_curve[0][0], 0),
-                    (prev_curve[-1][0], 0)]
                 for idx in range(1, len(prev_curve)):
                     self.writer.triangle(
-                        prev_curve[idx-1] + (i,),
-                        prev_curve[idx] + (i,),
-                        (prev_curve[-1][0], 0.0, i))
-                #self.writer.connect_curves(bottom_curve, i, prev_curve, i);
-                prev_z = i
-                my_step = numpy.amax([ y for (x, y) in prev_curve])
-                i += my_step
+                        prev_curve[idx-1] + (z,),
+                        prev_curve[idx] + (z,),
+                        (prev_curve[-1][0], 0.0, z))
+                prev_z = z
+                z = self.find_next_curve(z)
                 continue
-            self.writer.connect_curves(prev_curve, prev_z, next_curve, i)
+            self.writer.connect_curves(prev_curve, prev_z, next_curve, z)
             self.writer.quad(
                 prev_curve[-1] + (prev_z,),
-                next_curve[-1] + (i,),
-                (next_curve[-1][0], 0.0, i),
+                next_curve[-1] + (z,),
+                (next_curve[-1][0], 0.0, z),
                 (prev_curve[-1][0], 0.0, prev_z))
             self.writer.quad(
                 (prev_curve[-1][0], 0.0, prev_z),
-                (next_curve[-1][0], 0.0, i),
-                (next_curve[0][0], 0.0, i),
+                (next_curve[-1][0], 0.0, z),
+                (next_curve[0][0], 0.0, z),
                 (prev_curve[0][0], 0.0, prev_z))
             prev_curve = next_curve
-            prev_z = i
-            my_step = float(numpy.amax([ y for (x, y) in prev_curve]))
-            i += my_step
-            if i > self.length:
-                i = self.length
-                count += 1
+            prev_z = z
+            z = self.find_next_curve(z)
 
         left = next_curve[0][0]
         right = next_curve[-1][0]
@@ -498,7 +516,7 @@ class TemplateGenerator:
                          (prevx, 0, self.height),
                          (prevx, 0, prevy))
 
-    def generate_template(self, step, inv):
+    def generate_template(self, inv):
         """Generates the STL shape.
 
         Args:
@@ -531,7 +549,7 @@ class TemplateGenerator:
 
         prevx = -1
         prevy = -1
-        for (x, y) in self.naca.curve(step):
+        for (x, y) in self.naca.curve():
             if inv:
                 y =  max_thickness - y
             if prevx == -1:
@@ -541,11 +559,12 @@ class TemplateGenerator:
             (prevx, prevy) = (x, y)
 
 def printcurve(args):
-    naca = NacaCurve(args.chord, args.curvespec)
+    naca = NacaCurve(args.chord, args.curvespec,
+                     resolution=args.resolution)
 
     prevx = -10
     prevy = 0.0
-    for (x, y) in naca.curve(step):
+    for (x, y) in naca.curve():
         if args.padding:
             if prevx != -10:
                 newx, newy = naca.padcurve(prevx, prevy, x, y, args.padding)
@@ -558,9 +577,10 @@ def printcurve(args):
 
 def printstl_template(args):
     writer = StlWriter(out)
-    naca = NacaCurve(args.chord, args.curvespec)
+    naca = NacaCurve(args.chord, args.curvespec,
+                     resolution=args.resolution)
     gen = TemplateGenerator(writer, naca, args.height, args.thickness)
-    gen.generate_template(step, args.inv)
+    gen.generate_template(args.inv)
     writer.close()
 
 def printstl_airfoil(args):
@@ -568,7 +588,8 @@ def printstl_airfoil(args):
     gen = FoilGenerator(writer,
                         args.length,
                         args.width,
-                        args.curvespec)
+                        args.curvespec,
+                        resolution=args.resolution)
     if args.box_length != 0:
         gen.set_raw_box(args.box_length,
                         args.box_thickness)
@@ -595,9 +616,13 @@ sp_start.add_argument('--length', type=float,
 sp_start.add_argument('--width', type=float,
                       help='Width of airfoil in mm, default is 300',
                       default=300)
-sp_start.add_argument('--resolution', metavar='density', type=float,
+sp_start.add_argument('--resolution', type=float,
                       default=1,
-                      help='Curve resolution in points/mm. Default is 1.')
+                      help="""
+Curve angular resolution in degrees. This is maximum curve
+direction change between two points. The value is used
+for both foil shape and planform shape. Default is 1.
+""")
 
 sp_start.add_argument('--curvespec', type=str, help="""
 If starts with "00", this is the NACA4 specification of the airfoil.
@@ -635,9 +660,12 @@ Produce inverted template. Use when hand-sanding and checking.
 The non-inverted parts can be used for guiding the router.
 """) 
 
-sp_start.add_argument('--resolution', metavar='density', type=float,
+sp_start.add_argument('--resolution', type=float,
                       default=1,
-                      help='Curve resolution in points/mm. Default is 1.')
+                      help="""
+Curve angular resolution in degrees. This is maximum curve
+direction change between two points. Default is 1.
+""")
 sp_start.add_argument('--chord', '-c', metavar='len', default=100, type=int,
                       help='Chord length of the airfoil in mm. Default is 100')
 
@@ -658,9 +686,12 @@ If starts with "00", this is the NACA4 specification of the airfoil.
 If starts with a number [1-9], this is the maximum thickness of the
 airfoil in mm. Default is 12
 """, default='12')
-sp_start.add_argument('--resolution', metavar='density', type=float,
+sp_start.add_argument('--resolution', type=float,
                       default=1,
-                      help='Curve resolution in points/mm. Default is 1.')
+                      help="""
+Curve angular resolution in degrees. This is maximum curve
+direction change between two points. Default is 1.
+""")
 sp_start.add_argument('--padding', '-p', metavar='p', type=int, help="""
 Padding of the airfoil in mm. This is useful if you guide your
 instrument some distance from the surface. That distance is added
@@ -672,8 +703,6 @@ Output file to write. If not specified, stdout is used.
 """)
 
 args = parser.parse_args()
-
-step = 1.0 / args.resolution
 
 if args.out is not None:
     out = open(args.out, 'w')
