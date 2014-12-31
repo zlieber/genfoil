@@ -289,20 +289,20 @@ class NacaCurve:
         yield (self.c_param, self.calcy_converged(self.c_param))
 
 class FoilGenerator:
-
-    def __init__(self, stl_writer, length, width, curvespec, resolution=1.0):
+    def __init__(self, stl_writer, length,
+                 width, curvespec, resolution=1.0,
+                 trail_width=1.0):
         self.writer = stl_writer
         self.resolution = resolution
         self.length = length
         self.width = width
         self.box_length = 0
         self.curvespec = curvespec
+        self.trail_width = trail_width
         if self.curvespec.startswith('00'):
             self.thickness = float(re.sub(r'^00', '', curvespec)) / 100 * self.width
         else:
             self.thickness = float(curvespec)
-        self.curve_res = 1
-        self.planform_res = 1
         self.init_planform_params()
 
     def init_planform_params(self):
@@ -323,10 +323,6 @@ class FoilGenerator:
 
     def set_naca_curve(self, curvespec):
         self.curvespec = curvespec
-
-    def set_precision(self, curve_res, planform_res):
-        self.curve_res = curve_res
-        self.planform_res = planform_res
 
     def planform_func(self, x):
         y = 1.0/x + 0.03 * x ** 4
@@ -387,7 +383,7 @@ class FoilGenerator:
         chord = right - left
         naca = NacaCurve(chord,
                          str(self.thickness * chord / self.width),
-                         tail_height=1.0, resolution = self.resolution)
+                         tail_height=self.trail_width, resolution = self.resolution)
         my_curve = [ (x + left, y) for (x, y) in naca.curve() ]
         return my_curve
 
@@ -461,7 +457,7 @@ class FoilGenerator:
                 (right, 0) ]
             front_vertical = [
                 (right, self.box_thickness),
-                (right, 1.0),
+                (right, self.trail_width),
                 (right, 0.0) ]
             self.writer.connect_curves(front_vertical, back, back_vertical, back + self.box_length)
 
@@ -589,6 +585,7 @@ def printstl_airfoil(args):
                         args.length,
                         args.width,
                         args.curvespec,
+                        trail_width=args.trail_width,
                         resolution=args.resolution)
     if args.box_length != 0:
         gen.set_raw_box(args.box_length,
@@ -629,6 +626,12 @@ If starts with "00", this is the NACA4 specification of the airfoil.
 If starts with a number [1-9], this is the maximum thickness of the
 airfoil in mm. Default is 12
 """, default='12')
+
+sp_start.add_argument('--trail_width', type=float, help="""
+Width of the trailing edge in mm. Trailing edge cannot have zero
+thickness, and all cross-section curves are adjusted to converge
+to this value. Default is 1mm.
+""", default=1)
 
 sp_start.add_argument('--box_length', type=int, help="""
 Leave unprocessed material of this length at the beginning
