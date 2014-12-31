@@ -348,12 +348,21 @@ class FoilGenerator:
         my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
         return my_curve
 
+    def find_starting_curve(self):
+        # For tapered planform just find a curve with at least 5 points.
+        curr_distance = 5.0
+        prev_distance = None
+        while len(self.curve_point_list_for_distance(curr_distance)) > 5:
+            prev_distance = curr_distance
+            curr_distance /= 2
+        return prev_distance
+
     def generate_airfoil(self):
         prev_curve = None
         prev_z = 0
 
         # TODO(zlieber): parametrize this
-        i = 1.0
+        i = self.find_starting_curve()
         count = 0
         while count < 2:
             next_curve = self.curve_point_list_for_distance(i)
