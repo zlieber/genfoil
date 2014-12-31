@@ -486,32 +486,6 @@ class TemplateGenerator:
         self.height = height
         self.thickness = thickness
 
-    def triangles(self, prevx, prevy, x, y):
-        """Generates a set of triangles for the curve.
-
-        Args:
-          writer: stl writer to use.
-          prevx, prevy: previous point on the curve.
-          x, y: current point on the curve."""
-
-        # working surface
-        self.writer.quad((prevx, 0, prevy),
-                         (prevx, self.thickness, prevy),
-                         (x, self.thickness, y),
-                         (x, 0, y))
-
-        # top side
-        self.writer.quad((prevx, self.thickness, prevy),
-                         (prevx, self.thickness, self.height),
-                         (x, self.thickness, self.height),
-                         (x, self.thickness, y))
-
-        # bottom side
-        self.writer.quad((x, 0, y),
-                         (x, 0, self.height),
-                         (prevx, 0, self.height),
-                         (prevx, 0, prevy))
-
     def generate_template(self, inv):
         """Generates the STL shape.
 
@@ -519,40 +493,36 @@ class TemplateGenerator:
           inv: True if the shape should be inverted."""
 
         max_thickness = self.naca.t_param * self.naca.c_param
-
-        if inv:
-            z_start = max_thickness
+        if (inv):
+            top_curve = [ (x, y + self.height) for (x, y) in self.naca.curve() ]
+            top_y = self.height
         else:
-            z_start = 0
+            flat = 1
+            top_curve = [ (x + flat, self.height + max_thickness - y) for (x, y) in self.naca.curve() ]
+            top_y = self.height + max_thickness
+            top_curve.insert(0, (0, top_y))
 
-        # Left wall
-        self.writer.quad((0, 0, self.height),
-                         (0, self.thickness, self.height),
-                         (0, self.thickness, z_start),
-                         (0, 0, z_start))
-
-        # Right wall
-        self.writer.quad((self.naca.c_param, 0, z_start),
-                         (self.naca.c_param, self.thickness, z_start),
-                         (self.naca.c_param, self.thickness, self.height),
-                         (self.naca.c_param, 0, self.height))
-
-        # Back wall
-        self.writer.quad((0, 0, self.height),
-                         (self.naca.c_param, 0, self.height),
-                         (self.naca.c_param, self.thickness, self.height),
-                         (0, self.thickness, self.height))
-
-        prevx = -1
-        prevy = -1
-        for (x, y) in self.naca.curve():
-            if inv:
-                y =  max_thickness - y
-            if prevx == -1:
-                (prevx, prevy) = (x, y)
-                continue
-            self.triangles(prevx, prevy, x, y)
-            (prevx, prevy) = (x, y)
+        self.writer.connect_curves(top_curve, 0, top_curve, self.thickness)
+        bottom_curve = [
+            (0, 0),
+            (top_curve[-1][0], 0) ]
+        self.writer.connect_curves(bottom_curve, 0, top_curve, 0)
+        self.writer.connect_curves(top_curve, self.thickness, bottom_curve, self.thickness)
+        self.writer.quad(
+            (top_curve[0][0], top_y, self.thickness),
+            (top_curve[0][0], top_y, 0),
+            (top_curve[0][0], 0, 0),
+            (top_curve[0][0], 0, self.thickness))
+        self.writer.quad(
+            (top_curve[-1][0], top_y, 0),
+            (top_curve[-1][0], top_y, self.thickness),
+            (top_curve[-1][0], 0, self.thickness),
+            (top_curve[-1][0], 0, 0))
+        self.writer.quad(
+            (top_curve[0][0], 0, 0),
+            (top_curve[-1][0], 0, 0),
+            (top_curve[-1][0], 0, self.thickness),
+            (top_curve[0][0], 0, self.thickness))
 
 def printcurve(args):
     naca = NacaCurve(args.chord, args.curvespec,
