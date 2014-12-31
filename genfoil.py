@@ -6,12 +6,6 @@ import sys
 import numpy
 import scipy.optimize
 
-A1 = 0.2969
-A2 = -0.1260
-A3 = -0.3516
-A4 = 0.2843
-A5 = -0.1015
-
 class StlWriter:
     def __init__(self, stream):
         self.out = stream
@@ -67,7 +61,6 @@ class StlWriter:
         total_points_next = len(next_curve)
         total_points_ratio = float(total_points_prev) / total_points_next
         running_ratio = 1.0
-        done = False
         last_point_prev = 0
         last_point_next = 0
         while (last_point_prev + 1 < len(prev_curve) or
@@ -96,140 +89,178 @@ class StlWriter:
                 last_point_prev += 1
             running_ratio = float(last_point_prev+1) / (last_point_next+1)
 
-def calcy(x):
-    """Calculate a single airfoil point.
+class NacaCurve:
+    def __init__(self, chord, naca_spec=None, thickness=None, tail_height=0.0):
+        if (naca_spec is None) == (thickness is None):
+            raise "Either spec or thickness must be given"
+        self.chord = chord
+        self.t_param = self.getthickness(naca_spec, thickness, chord)
+        self.c_param = chord
 
-    Uses NACA formula.
+        # NACA curve does not converge to zero at the trailing edge.
+        # We introduce a minor correction - convergence_param to
+        # force that to happen.
+        self.convergence_param = self.calcy(chord) - tail_height
 
-    Args:
-      x: X coordinate
+    def getthickness(self, naca4, thick, chord):
+        """Computes the thickness parameter.
 
-    Returns:
-      The calculated point (x, y)"""
+        Based on various args."""
 
-    x1 = x / C_PARAM;
-    return (T_PARAM / 0.2 * C_PARAM) * (
-        A1 * x1 ** 0.5 +
-        A2 * x1 +
-        A3 * x1 ** 2 +
-        A4 * x1 ** 3 +
-        A5 * x1 ** 4)
+        if (naca4 is not None and
+            thick is not None):
+           raise 'Do not specify both thickness and NACA4.'
 
-def printpt(name, x, y):
-    print "%s: %f, %f" % (name, x, y)
+        if thick is not None:
+            t = float(thick) / float(chord) * 100
+        elif naca4 is not None:
+            if not naca4.startswith('00'):
+                raise ('Invalid curve: "%s". Only curves starting with 00 are supported at this point.' %
+                       naca4)
+            t = float(re.sub(r'^00', '', naca4))
+        else:
+            raise 'Provide either thickness or NACA4 spec'
 
-def padcurve(x1, y1, x2, y2, r):
-    # midpoint between two points
-#    printpt("pt1", x1, y1);
-#    printpt("pt2", x2, y2);
-    xmid = (x1 + x2) / 2
-    ymid = (y1 + y2) / 2
-#    printpt("Mid", xmid, ymid)
+        return t / 100
 
-    if abs(x2 - x1) < 0.00001:
-        normA = 0
-    else:
-        a = (y2 - y1) / (x2 - x1)
-        b = ymid - a*xmid
+    def calcy(self, x):
+        """Calculate a single airfoil point.
 
-        # If the derivative is 0, normal is infinity, but the result
-        # is much simpler to compute: x stays the same, just add r to y
-        if abs(a) < 0.00001:
-            return (xmid, ymid + r)
+        Uses NACA formula.
+
+        Args:
+          x: X coordinate
+
+        Returns:
+          The calculated point (x, y)"""
+
+        A1 = 0.2969
+        A2 = -0.1260
+        A3 = -0.3516
+        A4 = 0.2843
+        A5 = -0.1015
+
+        x1 = x / self.c_param;
+        return (self.t_param / 0.2 * self.c_param) * (
+            A1 * x1 ** 0.5 +
+            A2 * x1 +
+            A3 * x1 ** 2 +
+            A4 * x1 ** 3 +
+            A5 * x1 ** 4)
+
+    def calcy_converged(self, x):
+        y = self.calcy(x)
+        y -= self.convergence_param * x / self.c_param
+        return y
+
+    def padcurve(self, x1, y1, x2, y2, r):
+        # midpoint between two points
+        xmid = (x1 + x2) / 2
+        ymid = (y1 + y2) / 2
+
+        if abs(x2 - x1) < 0.00001:
+            normA = 0
+        else:
+            a = (y2 - y1) / (x2 - x1)
+            b = ymid - a*xmid
+
+            # If the derivative is 0, normal is infinity, but the result
+            # is much simpler to compute: x stays the same, just add r to y
+            if abs(a) < 0.00001:
+                return (xmid, ymid + r)
 
             # now we know: y = a*x + b
-        normA = -1/a
+            normA = -1/a
 
-    normB = ymid - normA*xmid
+        normB = ymid - normA*xmid
 
-    # now we know the normal: y = normA*x + normB
-    # Solving quadratic equation
-    # r^2 = (x - xmid)^2 + (y - ymid)^2
-    # Substituting y = normA*x + normB
-    # r^2 = (x - xmid)^2 + (normA*x + normB - ymid)^2
-    # r^2 = x^2 - 2*xmid*x + xmid^2 + normA^2*x^2 + 2(normB-ymid)*normA*x + (normB - ymid)^2
-    # (1 + normA^2)x^2 + (2*(normB-ymid)*normA - 2*xmid)x + (xmid^2 + (normB - ymid)^2 - r^2) = 0
-    # qA*x^2 + qA*x + qC = 0
-    qA = 1 + normA**2
-    qB = 2*(normB-ymid)*normA - 2*xmid
-    qC = xmid**2 + (normB - ymid)**2 - r**2
-    D = qB**2 - 4*qA*qC
-    if D < 0:
-        raise "No solutions for quadratic equation"
-    root1X = (-qB + D**0.5) / (2*qA)
-    root2X = (-qB - D**0.5) / (2*qA)
-    root1Y = normA*root1X + normB
-    root2Y = normA*root2X + normB
+        # now we know the normal: y = normA*x + normB
+        # Solving quadratic equation
+        # r^2 = (x - xmid)^2 + (y - ymid)^2
+        # Substituting y = normA*x + normB
+        # r^2 = (x - xmid)^2 + (normA*x + normB - ymid)^2
+        # r^2 = x^2 - 2*xmid*x + xmid^2 + normA^2*x^2 + 2(normB-ymid)*normA*x + (normB - ymid)^2
+        # (1 + normA^2)x^2 + (2*(normB-ymid)*normA - 2*xmid)x + (xmid^2 + (normB - ymid)^2 - r^2) = 0
+        # qA*x^2 + qA*x + qC = 0
+        qA = 1 + normA**2
+        qB = 2*(normB-ymid)*normA - 2*xmid
+        qC = xmid**2 + (normB - ymid)**2 - r**2
+        D = qB**2 - 4*qA*qC
+        if D < 0:
+            raise "No solutions for quadratic equation"
+        root1X = (-qB + D**0.5) / (2*qA)
+        root2X = (-qB - D**0.5) / (2*qA)
+        root1Y = normA*root1X + normB
+        root2Y = normA*root2X + normB
 
-    # Pick the solution that results in higher Y
-    if root1Y > ymid:
-        return (root1X, root1Y)
-    else:
-        return (root2X, root2Y)
-        
-def distance(x1, x2):
-    """Computes distance between two points on the airfoil.
-
-    Uses pythagoras theorem.
-
-    Args:
-      x1: first point
-      x2: second point
-
-    Returns:
-      Distance in mm"""
-
-    y1 = calcy(x1)
-    y2 = calcy(x2)
-    return ( (x1 - x2)**2 + (y1 - y2)**2 ) ** 0.5
-
-def findnext(x, step):
-    """Finds next point (x, y) to add to the curve.
-
-    Uses binary search to determine the x value so that the
-    total distance on the curve is within the resolution.
-
-    Args:
-      x: starting point
-      step: resolution
-
-    Returns
-      Next point on the curve (x, y)."""
- 
-    prevdelta = 0
-    delta = 0.1
-    curr = x
-    done = False
-
-    while not done:
-        d = distance(x, x + delta)
-        if abs((d - step) / step) < 0.0001:
-            done = True
+        # Pick the solution that results in higher Y
+        if root1Y > ymid:
+            return (root1X, root1Y)
         else:
-            if d < step:
-                newdelta = delta * 2
-                prevdelta = delta
-                delta = newdelta
+            return (root2X, root2Y)
+
+    def distance(self, x1, x2):
+        """Computes distance between two points on the airfoil.
+
+        Uses pythagoras theorem.
+
+        Args:
+          x1: first point
+          x2: second point
+
+        Returns:
+          Distance in mm"""
+
+        y1 = self.calcy_converged(x1)
+        y2 = self.calcy_converged(x2)
+        return ( (x1 - x2)**2 + (y1 - y2)**2 ) ** 0.5
+
+    def findnext(self, x, step):
+        """Finds next point (x, y) to add to the curve.
+
+        Uses binary search to determine the x value so that the
+        total distance on the curve is within the resolution.
+
+        Args:
+          x: starting point
+          step: resolution
+
+        Returns
+          Next point on the curve (x, y)."""
+
+        prevdelta = 0
+        delta = 0.1
+        curr = x
+        done = False
+
+        while not done:
+            d = self.distance(x, x + delta)
+            if abs((d - step) / step) < 0.0001:
+                done = True
             else:
-                delta = (delta + prevdelta) / 2
-    return ((x + delta), calcy((x + delta)))
-        
+                if d < step:
+                    newdelta = delta * 2
+                    prevdelta = delta
+                    delta = newdelta
+                else:
+                    delta = (delta + prevdelta) / 2
+        return ((x + delta), self.calcy_converged((x + delta)))
 
-def curve(step):
-    """Generates the curve with given step.
+    def curve(self, step):
+        """Generates the curve with given step.
 
-    Iterable for points (x, y)."""
+        Iterable for points (x, y)."""
 
-    x = 0
-    y = calcy(x)
-    yield (x, y)
-
-    while x < C_PARAM:
-        (x, y) = findnext(x, step)
-        if (x > C_PARAM):
-            break
+        x = 0
+        y = self.calcy_converged(x)
         yield (x, y)
-    yield (C_PARAM, calcy(C_PARAM))
+
+        while x < self.c_param:
+            (x, y) = self.findnext(x, step)
+            if (x > self.c_param):
+                break
+            yield (x, y)
+        yield (self.c_param, self.calcy_converged(self.c_param))
 
 
 def triangles(writer, prevx, prevy, x, y):
@@ -258,13 +289,13 @@ def triangles(writer, prevx, prevy, x, y):
          (prevx, 0, HEIGHT),
          (prevx, 0, prevy))
 
-def stl_template(step, inv):
+def stl_template(step, inv, naca):
     """Generates the STL shape.
 
     Args:
       inv: True if the shape should be inverted."""
 
-    max_thickness = T_PARAM * C_PARAM
+    max_thickness = naca.t_param * naca.c_param
 
     writer = StlWriter(out)
 
@@ -280,20 +311,20 @@ def stl_template(step, inv):
                 (0, 0, z_start))
 
     # Right wall
-    writer.quad((C_PARAM, 0, z_start),
-                (C_PARAM, THICKNESS, z_start),
-                (C_PARAM, THICKNESS, HEIGHT),
-                (C_PARAM, 0, HEIGHT))
+    writer.quad((naca.c_param, 0, z_start),
+                (naca.c_param, THICKNESS, z_start),
+                (naca.c_param, THICKNESS, HEIGHT),
+                (naca.c_param, 0, HEIGHT))
 
     # Back wall
     writer.quad((0, 0, HEIGHT),
-                (C_PARAM, 0, HEIGHT),
-                (C_PARAM, THICKNESS, HEIGHT),
+                (naca.c_param, 0, HEIGHT),
+                (naca.c_param, THICKNESS, HEIGHT),
                 (0, THICKNESS, HEIGHT))
 
     prevx = -1
     prevy = -1
-    for (x, y) in curve(step):
+    for (x, y) in naca.curve(step):
         if inv:
             y =  max_thickness - y
         if prevx == -1:
@@ -304,37 +335,15 @@ def stl_template(step, inv):
 
     writer.close()
 
-def getthickness(args):
-    """Computes the thickness parameter.
-
-    Based on various args."""
-
-    if (args.naca4 is not None and
-        args.thick is not None):
-       print 'Do not specify both thickness and NACA4.'
-       sys.exit(1)
-
-    if args.thick:
-        t = float(args.thick) / float(args.chord) * 100
-    elif args.naca4:
-        if not args.naca4.startswith('00'):
-            print ('Invalid curve: "%s". Only curves starting with 00 are supported at this point.' %
-                   args.naca4)
-            sys.exit(1)
-        t = float(re.sub(r'^00', '', args.naca4))
-    else:
-        print 'Provide either thickness or NACA4 spec'
-        sys.exit(1)
-
-    return t / 100
-
 def printcurve(args):
+    naca = NacaCurve(args.chord, args.naca4, args.thick)
+
     prevx = -10
     prevy = 0.0
-    for (x, y) in curve(step):
+    for (x, y) in naca.curve(step):
         if args.padding:
             if prevx != -10:
-                newx, newy = padcurve(prevx, prevy, x, y, args.padding)
+                newx, newy = naca.padcurve(prevx, prevy, x, y, args.padding)
                 out.write("%f %f\n" % (newx, newy))
             prevx = x
             prevy = y
@@ -347,8 +356,9 @@ def printstl_template(args):
 
     HEIGHT = args.height
     THICKNESS = args.thickness
+    naca = NacaCurve(args.chord, args.naca4, args.thick)
 
-    stl_template(step, args.inv)
+    stl_template(step, args.inv, naca)
 
 def foil_shape_xx(y):
     min_func = lambda x: (foil_shape_func(x) - y)**2
@@ -389,8 +399,6 @@ def foil_to_func_x(x):
 def foil_shape_func(x):
     y = 1.0/x + 0.03 * x ** 4
     return y
-# y = 1/x + 0.03 x^4
-# dy / dx = log x + 0.12 x^3
 
 def get_shape_from_to(r):
     """Returns the pair (x1, x2) of coordinates for foil shape.
@@ -413,12 +421,10 @@ def point(y):
     print '%d %f %f' % (y, left, right)
 
 def curve_point_list_for_distance(r):
-    global T_PARAM, C_PARAM
     (left, right) = get_shape_from_to(r)
-    C_PARAM = right - left
-    local_thickness = float(THICKNESS) * C_PARAM / float(WIDTH)
-    T_PARAM = float(local_thickness) / float(C_PARAM)
-    my_curve = [ (x + left, y) for (x, y) in curve(step) ]
+    chord = right - left
+    naca = NacaCurve(chord, None, THICKNESS * chord / WIDTH, tail_height=1.0)
+    my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
     return my_curve
 
 def printstl_airfoil(args):
@@ -442,66 +448,83 @@ def printstl_airfoil(args):
 
     writer = StlWriter(out)
     prev_curve = None
-    i = 0.0
+    prev_z = 0
+    i = 1.0
     count = 0
     while count < 2:
         next_curve = curve_point_list_for_distance(i)
-        next_curve.append((next_curve[len(next_curve)-1][0], 0.0))
-        next_curve.insert(0, (next_curve[0][0], 0.0))
+        print "Curve: (%f, %f) - (%f, %f) (%d points)" % (next_curve[0] + next_curve[-1] + (len(next_curve),))
         if prev_curve is None:
             prev_curve = next_curve
+            # Front wall
+            bottom_curve = [
+                (prev_curve[0][0], 0),
+                (prev_curve[-1][0], 0)]
+            writer.connect_curves(bottom_curve, i, prev_curve, i);
+            prev_z = i
             my_step = numpy.amax([ y for (x, y) in prev_curve])
             i += my_step
             continue
-        writer.connect_curves(prev_curve, i - my_step, next_curve, i)
+        writer.connect_curves(prev_curve, prev_z, next_curve, i)
         writer.quad(
-            prev_curve[len(prev_curve)-1] + (i - my_step,),
-            next_curve[len(next_curve)-1] + (i,),
-            next_curve[0] + (i,),
-            prev_curve[0] + (i - my_step,))
+            prev_curve[-1] + (prev_z,),
+            next_curve[-1] + (i,),
+            (next_curve[-1][0], 0.0, i),
+            (prev_curve[-1][0], 0.0, prev_z))
+        writer.quad(
+            (prev_curve[-1][0], 0.0, prev_z),
+            (next_curve[-1][0], 0.0, i),
+            (next_curve[0][0], 0.0, i),
+            (prev_curve[0][0], 0.0, prev_z))
         prev_curve = next_curve
+        prev_z = i
         my_step = float(numpy.amax([ y for (x, y) in prev_curve]))
         i += my_step
         if i > LENGTH:
             i = LENGTH
             count += 1
 
+    left = next_curve[0][0]
+    right = next_curve[-1][0]
+    back = prev_z
+
     if args.box_length != 0:
         top_curve = [ (x, args.box_thickness) for (x, y) in next_curve ]
-        top_curve.insert(0, (0, args.box_thickness))
-        top_curve.insert(0, (0, 0))
-        top_curve.append((args.box_width, args.box_thickness))
-        top_curve.append((args.box_width, 0))
-        writer.connect_curves(next_curve, LENGTH, top_curve, LENGTH)
+        writer.connect_curves(next_curve, back, top_curve, back)
+        back_curve = [ (left, args.box_thickness),
+                       (right, args.box_thickness) ]
+        writer.connect_curves(top_curve, back, back_curve, back + args.box_length)
         writer.quad(
-            (0, 0, LENGTH + args.box_length),
-            (0, args.box_thickness, LENGTH + args.box_length),
-            (0, args.box_thickness, LENGTH),
-            (0, 0, LENGTH))
+            (left, 0, back + args.box_length),
+            (left, args.box_thickness, back + args.box_length),
+            (left, args.box_thickness, back),
+            (left, 0, back))
+
+        back_vertical = [
+            (right, args.box_thickness),
+            (right, 0) ]
+        front_vertical = [
+            (right, args.box_thickness),
+            (right, 1.0),
+            (right, 0.0) ]
+        writer.connect_curves(front_vertical, back, back_vertical, back + args.box_length)
+
         writer.quad(
-            (0, args.box_thickness, LENGTH + args.box_length),
-            (args.box_width, args.box_thickness, LENGTH + args.box_length),
-            (args.box_width, args.box_thickness, LENGTH),
-            (0, args.box_thickness, LENGTH))
+            (left, 0, back),
+            (right, 0, back),
+            (right, 0, back + args.box_length),
+            (left, 0, back + args.box_length))
         writer.quad(
-            (args.box_width, 0, LENGTH),
-            (args.box_width, args.box_thickness, LENGTH),
-            (args.box_width, args.box_thickness, LENGTH + args.box_length),
-            (args.box_width, 0, LENGTH + args.box_length))
-        writer.quad(
-            (0, 0, LENGTH),
-            (args.box_width, 0, LENGTH),
-            (args.box_width, 0, LENGTH + args.box_length),
-            (0, 0, LENGTH + args.box_length))
-        writer.quad(
-            (args.box_width, 0, LENGTH + args.box_length),
-            (args.box_width, args.box_thickness, LENGTH + args.box_length),
-            (0, args.box_thickness, LENGTH + args.box_length),
-            (0, 0, LENGTH + args.box_length))
+            (right, 0, back + args.box_length),
+            (right, args.box_thickness, back + args.box_length),
+            (left, args.box_thickness, back + args.box_length),
+            (left, 0, back + args.box_length))
     else:
         # Back wall
-        bottom_straight = [ (x, 0) for (x, y) in next_curve ]
-        writer.connect_curves(next_curve, LENGTH, bottom_straight, LENGTH)
+        bottom_straight = [ 
+            (next_curve[0][0], 0),
+            (next_curve[-1][0], 0) ]
+        writer.connect_curves(next_curve, prev_z, bottom_straight, prev_z)
     writer.close()
 
 parser = argparse.ArgumentParser(description='Generate airfoil data for plotting or 3D printing.')
@@ -551,9 +574,6 @@ args = parser.parse_args()
 if args.chord is None:
     print ('Chord length must be specified')
     sys.exit(1)
-
-T_PARAM = getthickness(args)
-C_PARAM = args.chord
 
 step = 1.0 / args.resolution
 
