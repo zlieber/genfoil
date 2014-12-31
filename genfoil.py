@@ -262,6 +262,179 @@ class NacaCurve:
             yield (x, y)
         yield (self.c_param, self.calcy_converged(self.c_param))
 
+class FoilGenerator:
+
+    def __init__(self, stl_writer, length, width, thickness):
+        self.writer = stl_writer
+        self.length = length
+        self.width = width
+        self.thickness = thickness
+        self.box_length = 0
+        self.curvespec = None
+        self.curve_res = 1
+        self.planform_res = 1
+        self.init_planform_params()
+
+    def init_planform_params(self):
+        result = scipy.optimize.minimize(self.planform_func, [0.1])
+        if not result.success:
+            # TODO: proper errors
+            raise 'Cannot optimize airfoil shape!'
+
+        self.planform_min_x = result.x
+        self.planform_min_y = self.planform_func(self.planform_min_x)
+        self.planform_max_y = 35
+        (self.planform_max_x1, self.planform_max_x2) = self.foil_shape_xx(
+            self.planform_max_y)
+
+    def set_raw_box(self, length, thickness):
+        self.box_length = length
+        self.box_thickness = thickness
+
+    def set_naca_curve(self, curvespec):
+        self.curvespec = curvespec
+
+    def set_precision(self, curve_res, planform_res):
+        self.curve_res = curve_res
+        self.planform_res = planform_res
+
+    def planform_func(self, x):
+        y = 1.0/x + 0.03 * x ** 4
+        return y
+
+    def foil_shape_xx(self, y):
+        min_func = lambda x: (self.planform_func(x) - y)**2
+
+        result = scipy.optimize.minimize(min_func, [10.e-10],
+                                         bounds=[(1.0e-25, self.planform_min_x)],
+                                         method='L-BFGS-B')
+        if not result.success:
+            print 'Cannot optimize left, y = %f' % y
+            return None
+        left_x = result.x[0]
+
+        result = scipy.optimize.minimize(min_func,
+                                         [self.planform_min_x + 0.1],
+                                         bounds=[(self.planform_min_x, None)],
+                                         method='L-BFGS-B')
+        if not result.success:
+            print 'Cannot optimize right, y = %f' % y
+            return None
+        right_x = result.x[0]
+        return (left_x, right_x)
+
+    def foil_to_func_y(self, r):
+        """Given distance from tip r, return y in func coords.
+        """
+        return (float(r) / self.length *
+                (self.planform_max_y - self.planform_min_y) +
+                self.planform_min_y)
+
+    def func_to_foil_x(self, x):
+        """Given x in func coords, return distance from edge x.
+        """
+        return ((x - self.planform_max_x1) /
+                (self.planform_max_x2 - self.planform_max_x1) *
+                self.width)
+
+    def get_shape_from_to(self, r):
+        """Returns the pair (x1, x2) of coordinates for foil shape.
+        Arguments:
+            r: Distance in mm from foil tip.
+        """
+        y = self.foil_to_func_y(r)
+        (left, right) = self.foil_shape_xx(y)
+        return (self.func_to_foil_x(left), self.func_to_foil_x(right))
+
+    def curve_point_list_for_distance(self, r):
+        (left, right) = self.get_shape_from_to(r)
+        chord = right - left
+        naca = NacaCurve(chord, None, self.thickness * chord / self.width, tail_height=1.0)
+        my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
+        return my_curve
+
+    def generate_airfoil(self):
+        prev_curve = None
+        prev_z = 0
+
+        # TODO(zlieber): parametrize this
+        i = 1.0
+        count = 0
+        while count < 2:
+            next_curve = self.curve_point_list_for_distance(i)
+            print "Curve: (%f, %f) - (%f, %f) (%d points)" % (next_curve[0] + next_curve[-1] + (len(next_curve),))
+            if prev_curve is None:
+                prev_curve = next_curve
+                # Front wall
+                bottom_curve = [
+                    (prev_curve[0][0], 0),
+                    (prev_curve[-1][0], 0)]
+                self.writer.connect_curves(bottom_curve, i, prev_curve, i);
+                prev_z = i
+                my_step = numpy.amax([ y for (x, y) in prev_curve])
+                i += my_step
+                continue
+            self.writer.connect_curves(prev_curve, prev_z, next_curve, i)
+            self.writer.quad(
+                prev_curve[-1] + (prev_z,),
+                next_curve[-1] + (i,),
+                (next_curve[-1][0], 0.0, i),
+                (prev_curve[-1][0], 0.0, prev_z))
+            self.writer.quad(
+                (prev_curve[-1][0], 0.0, prev_z),
+                (next_curve[-1][0], 0.0, i),
+                (next_curve[0][0], 0.0, i),
+                (prev_curve[0][0], 0.0, prev_z))
+            prev_curve = next_curve
+            prev_z = i
+            my_step = float(numpy.amax([ y for (x, y) in prev_curve]))
+            i += my_step
+            if i > self.length:
+                i = self.length
+                count += 1
+
+        left = next_curve[0][0]
+        right = next_curve[-1][0]
+        back = prev_z
+
+        if self.box_length != 0:
+            top_curve = [ (x, self.box_thickness) for (x, y) in next_curve ]
+            self.writer.connect_curves(next_curve, back, top_curve, back)
+            back_curve = [ (left, self.box_thickness),
+                           (right, self.box_thickness) ]
+            self.writer.connect_curves(top_curve, back, back_curve, back + self.box_length)
+            self.writer.quad(
+                (left, 0, back + self.box_length),
+                (left, self.box_thickness, back + self.box_length),
+                (left, self.box_thickness, back),
+                (left, 0, back))
+
+            back_vertical = [
+                (right, self.box_thickness),
+                (right, 0) ]
+            front_vertical = [
+                (right, self.box_thickness),
+                (right, 1.0),
+                (right, 0.0) ]
+            self.writer.connect_curves(front_vertical, back, back_vertical, back + self.box_length)
+
+            self.writer.quad(
+                (left, 0, back),
+                (right, 0, back),
+                (right, 0, back + self.box_length),
+                (left, 0, back + self.box_length))
+            self.writer.quad(
+                (right, 0, back + args.box_length),
+                (right, args.box_thickness, back + args.box_length),
+                (left, args.box_thickness, back + args.box_length),
+                (left, 0, back + args.box_length))
+        else:
+            # Back wall
+            bottom_straight = [ 
+                (next_curve[0][0], 0),
+                (next_curve[-1][0], 0) ]
+            self.writer.connect_curves(next_curve, prev_z, bottom_straight, prev_z)
+
 
 def triangles(writer, prevx, prevy, x, y):
     """Generates a set of triangles for the curve.
@@ -360,171 +533,17 @@ def printstl_template(args):
 
     stl_template(step, args.inv, naca)
 
-def foil_shape_xx(y):
-    min_func = lambda x: (foil_shape_func(x) - y)**2
-
-    result = scipy.optimize.minimize(min_func, [10.e-10], bounds=[(1.0e-25, MIN_X)], method='L-BFGS-B')
-    if not result.success:
-        print 'Cannot optimize left, y = %f' % y
-        return None
-    left_x = result.x[0]
-
-    result = scipy.optimize.minimize(min_func, [MIN_X+0.1], bounds=[(MIN_X, None)], method='L-BFGS-B')
-    if not result.success:
-        print 'Cannot optimize right, y = %f' % y
-        return None
-    right_x = result.x[0]
-    return (left_x, right_x)
-
-def func_to_foil_y(y):
-    """Given y in func coords, return distance from tip r.
-    """
-    return (y - MIN_Y) / (MAX_Y - MIN_Y) * LENGTH
-
-def foil_to_func_y(r):
-    """Given distance from tip r, return y in func coords.
-    """
-    return float(r) / LENGTH * (MAX_Y - MIN_Y) + MIN_Y
-
-def func_to_foil_x(x):
-    """Given x in func coords, return distance from edge x.
-    """
-    return (x - MAX_X1) / (MAX_X2 - MAX_X1) * WIDTH
-
-def foil_to_func_x(x):
-    """Given distance from edge x, return x in func coords.
-    """
-    return x / WIDTH * (MAX_X2 - MAX_X1) + MAX_X1
-
-def foil_shape_func(x):
-    y = 1.0/x + 0.03 * x ** 4
-    return y
-
-def get_shape_from_to(r):
-    """Returns the pair (x1, x2) of coordinates for foil shape.
-    Arguments:
-        r: Distance in mm from foil tip.
-    """
-    y = foil_to_func_y(r)
-    (left, right) = foil_shape_xx(y)
-    return (func_to_foil_x(left), func_to_foil_x(right))
-
-def gen_shape(length, step):
-    for r in range(1, length, step):
-        yield get_shape_from_to(r, length)
-
-def stl_foil(step):
-    pass
-
-def point(y):
-    (left, right) = get_shape_from_to(y)
-    print '%d %f %f' % (y, left, right)
-
-def curve_point_list_for_distance(r):
-    (left, right) = get_shape_from_to(r)
-    chord = right - left
-    naca = NacaCurve(chord, None, THICKNESS * chord / WIDTH, tail_height=1.0)
-    my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
-    return my_curve
-
 def printstl_airfoil(args):
-    global LENGTH, WIDTH, THICKNESS
-    global MIN_X, MIN_Y
-    global MAX_X1, MAX_X2, MAX_Y
-
-    LENGTH = args.length
-    WIDTH = args.width
-    THICKNESS = args.thickness
-
-    result = scipy.optimize.minimize(foil_shape_func, [0.1])
-    if not result.success:
-        print 'Cannot optimize airfoil shape!'
-        return None
-
-    MIN_X = result.x
-    MIN_Y = foil_shape_func(MIN_X)
-    MAX_Y = 35
-    (MAX_X1, MAX_X2) = foil_shape_xx(MAX_Y)
-
     writer = StlWriter(out)
-    prev_curve = None
-    prev_z = 0
-    i = 1.0
-    count = 0
-    while count < 2:
-        next_curve = curve_point_list_for_distance(i)
-        print "Curve: (%f, %f) - (%f, %f) (%d points)" % (next_curve[0] + next_curve[-1] + (len(next_curve),))
-        if prev_curve is None:
-            prev_curve = next_curve
-            # Front wall
-            bottom_curve = [
-                (prev_curve[0][0], 0),
-                (prev_curve[-1][0], 0)]
-            writer.connect_curves(bottom_curve, i, prev_curve, i);
-            prev_z = i
-            my_step = numpy.amax([ y for (x, y) in prev_curve])
-            i += my_step
-            continue
-        writer.connect_curves(prev_curve, prev_z, next_curve, i)
-        writer.quad(
-            prev_curve[-1] + (prev_z,),
-            next_curve[-1] + (i,),
-            (next_curve[-1][0], 0.0, i),
-            (prev_curve[-1][0], 0.0, prev_z))
-        writer.quad(
-            (prev_curve[-1][0], 0.0, prev_z),
-            (next_curve[-1][0], 0.0, i),
-            (next_curve[0][0], 0.0, i),
-            (prev_curve[0][0], 0.0, prev_z))
-        prev_curve = next_curve
-        prev_z = i
-        my_step = float(numpy.amax([ y for (x, y) in prev_curve]))
-        i += my_step
-        if i > LENGTH:
-            i = LENGTH
-            count += 1
-
-    left = next_curve[0][0]
-    right = next_curve[-1][0]
-    back = prev_z
-
+    gen = FoilGenerator(writer,
+                        args.length,
+                        args.width,
+                        args.thickness)
     if args.box_length != 0:
-        top_curve = [ (x, args.box_thickness) for (x, y) in next_curve ]
-        writer.connect_curves(next_curve, back, top_curve, back)
-        back_curve = [ (left, args.box_thickness),
-                       (right, args.box_thickness) ]
-        writer.connect_curves(top_curve, back, back_curve, back + args.box_length)
-        writer.quad(
-            (left, 0, back + args.box_length),
-            (left, args.box_thickness, back + args.box_length),
-            (left, args.box_thickness, back),
-            (left, 0, back))
+        gen.set_raw_box(args.box_length,
+                        args.box_thickness)
 
-        back_vertical = [
-            (right, args.box_thickness),
-            (right, 0) ]
-        front_vertical = [
-            (right, args.box_thickness),
-            (right, 1.0),
-            (right, 0.0) ]
-        writer.connect_curves(front_vertical, back, back_vertical, back + args.box_length)
-
-        writer.quad(
-            (left, 0, back),
-            (right, 0, back),
-            (right, 0, back + args.box_length),
-            (left, 0, back + args.box_length))
-        writer.quad(
-            (right, 0, back + args.box_length),
-            (right, args.box_thickness, back + args.box_length),
-            (left, args.box_thickness, back + args.box_length),
-            (left, 0, back + args.box_length))
-    else:
-        # Back wall
-        bottom_straight = [ 
-            (next_curve[0][0], 0),
-            (next_curve[-1][0], 0) ]
-        writer.connect_curves(next_curve, prev_z, bottom_straight, prev_z)
+    gen.generate_airfoil()
     writer.close()
 
 parser = argparse.ArgumentParser(description='Generate airfoil data for plotting or 3D printing.')
@@ -536,7 +555,6 @@ sp_start.add_argument('--length', type=float, help='Length of airfoil in mm, def
 sp_start.add_argument('--width', type=float, help='Width of airfoil in mm, default is 300', default=300)
 sp_start.add_argument('--thickness', type=float, help='Thickness of airfoil in mm, default is 25', default=25)
 sp_start.add_argument('--box_length', type=int, help='Leave unprocessed material of this length at the beginning', default=0)
-sp_start.add_argument('--box_width', type=int, help='Width of unprocessed material', default=300)
 sp_start.add_argument('--box_thickness', type=int, help='Thickness of unprocessed material', default=13)
 
 sp_start.set_defaults(func=printstl_airfoil)
