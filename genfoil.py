@@ -435,78 +435,81 @@ class FoilGenerator:
                 (next_curve[-1][0], 0) ]
             self.writer.connect_curves(next_curve, prev_z, bottom_straight, prev_z)
 
+class TemplateGenerator:
 
-def triangles(writer, prevx, prevy, x, y):
-    """Generates a set of triangles for the curve.
+    def __init__(self, stl_writer, naca, height, thickness):
+        self.writer = stl_writer
+        self.naca = naca
+        self.height = height
+        self.thickness = thickness
 
-    Args:
-      writer: stl writer to use.
-      prevx, prevy: previous point on the curve.
-      x, y: current point on the curve."""
+    def triangles(self, prevx, prevy, x, y):
+        """Generates a set of triangles for the curve.
 
-    # working surface
-    writer.quad((prevx, 0, prevy),
-         (prevx, THICKNESS, prevy),
-         (x, THICKNESS, y),
-         (x, 0, y))
+        Args:
+          writer: stl writer to use.
+          prevx, prevy: previous point on the curve.
+          x, y: current point on the curve."""
 
-    # top side
-    writer.quad((prevx, THICKNESS, prevy),
-         (prevx, THICKNESS, HEIGHT),
-         (x, THICKNESS, HEIGHT),
-         (x, THICKNESS, y))
+        # working surface
+        self.writer.quad((prevx, 0, prevy),
+                         (prevx, self.thickness, prevy),
+                         (x, self.thickness, y),
+                         (x, 0, y))
 
-    # bottom side
-    writer.quad((x, 0, y),
-         (x, 0, HEIGHT),
-         (prevx, 0, HEIGHT),
-         (prevx, 0, prevy))
+        # top side
+        self.writer.quad((prevx, self.thickness, prevy),
+                         (prevx, self.thickness, self.height),
+                         (x, self.thickness, self.height),
+                         (x, self.thickness, y))
 
-def stl_template(step, inv, naca):
-    """Generates the STL shape.
+        # bottom side
+        self.writer.quad((x, 0, y),
+                         (x, 0, self.height),
+                         (prevx, 0, self.height),
+                         (prevx, 0, prevy))
 
-    Args:
-      inv: True if the shape should be inverted."""
+    def generate_template(self, step, inv):
+        """Generates the STL shape.
 
-    max_thickness = naca.t_param * naca.c_param
+        Args:
+          inv: True if the shape should be inverted."""
 
-    writer = StlWriter(out)
+        max_thickness = self.naca.t_param * self.naca.c_param
 
-    if inv:
-        z_start = max_thickness
-    else:
-        z_start = 0
-
-    # Left wall
-    writer.quad((0, 0, HEIGHT),
-                (0, THICKNESS, HEIGHT),
-                (0, THICKNESS, z_start),
-                (0, 0, z_start))
-
-    # Right wall
-    writer.quad((naca.c_param, 0, z_start),
-                (naca.c_param, THICKNESS, z_start),
-                (naca.c_param, THICKNESS, HEIGHT),
-                (naca.c_param, 0, HEIGHT))
-
-    # Back wall
-    writer.quad((0, 0, HEIGHT),
-                (naca.c_param, 0, HEIGHT),
-                (naca.c_param, THICKNESS, HEIGHT),
-                (0, THICKNESS, HEIGHT))
-
-    prevx = -1
-    prevy = -1
-    for (x, y) in naca.curve(step):
         if inv:
-            y =  max_thickness - y
-        if prevx == -1:
-            (prevx, prevy) = (x, y)
-            continue
-        triangles(writer, prevx, prevy, x, y)
-        (prevx, prevy) = (x, y)
+            z_start = max_thickness
+        else:
+            z_start = 0
 
-    writer.close()
+        # Left wall
+        self.writer.quad((0, 0, self.height),
+                         (0, self.thickness, self.height),
+                         (0, self.thickness, z_start),
+                         (0, 0, z_start))
+
+        # Right wall
+        self.writer.quad((self.naca.c_param, 0, z_start),
+                         (self.naca.c_param, self.thickness, z_start),
+                         (self.naca.c_param, self.thickness, self.height),
+                         (self.naca.c_param, 0, self.height))
+
+        # Back wall
+        self.writer.quad((0, 0, self.height),
+                         (self.naca.c_param, 0, self.height),
+                         (self.naca.c_param, self.thickness, self.height),
+                         (0, self.thickness, self.height))
+
+        prevx = -1
+        prevy = -1
+        for (x, y) in self.naca.curve(step):
+            if inv:
+                y =  max_thickness - y
+            if prevx == -1:
+                (prevx, prevy) = (x, y)
+                continue
+            self.triangles(prevx, prevy, x, y)
+            (prevx, prevy) = (x, y)
 
 def printcurve(args):
     naca = NacaCurve(args.chord, args.naca4, args.thick)
@@ -525,13 +528,11 @@ def printcurve(args):
             out.write("%f %f\n" % (newx, newy))
 
 def printstl_template(args):
-    global HEIGHT, THICKNESS
-
-    HEIGHT = args.height
-    THICKNESS = args.thickness
+    writer = StlWriter(out)
     naca = NacaCurve(args.chord, args.naca4, args.thick)
-
-    stl_template(step, args.inv, naca)
+    gen = TemplateGenerator(writer, naca, args.height, args.thickness)
+    gen.generate_template(step, args.inv)
+    writer.close()
 
 def printstl_airfoil(args):
     writer = StlWriter(out)
