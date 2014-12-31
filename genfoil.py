@@ -3,8 +3,31 @@
 import argparse
 import re
 import sys
+import math
 import numpy
 import scipy.optimize
+
+def derivative(func, x):
+    epsilon = 1e-9
+    diffx = 0
+    try:
+        before = func(x - epsilon)
+        if (math.isnan(before)):
+            raise "isNaN"
+        diffx += epsilon
+    except:
+        before = func(x)
+
+    try:
+        after = func(x + epsilon)
+        if (math.isnan(after)):
+            raise "isNaN"
+        diffx += epsilon
+    except:
+        after = func(x)
+    result = (after - before) / diffx
+    return result
+
 
 class StlWriter:
     def __init__(self, stream):
@@ -189,6 +212,9 @@ class NacaCurve:
         else:
             return (root2X, root2Y)
 
+    def derivative(self, x):
+        return derivative(self.calcy_converged, x)
+
     def distance(self, x1, x2):
         """Computes distance between two points on the airfoil.
 
@@ -201,9 +227,9 @@ class NacaCurve:
         Returns:
           Distance in mm"""
 
-        y1 = self.calcy_converged(x1)
-        y2 = self.calcy_converged(x2)
-        return ( (x1 - x2)**2 + (y1 - y2)**2 ) ** 0.5
+        curr_angle = math.degrees(math.atan(self.derivative(x1)))
+        new_angle = math.degrees(math.atan(self.derivative(x2)))
+        return abs(curr_angle - new_angle)
 
     def findnext(self, x, step):
         """Finds next point (x, y) to add to the curve.
@@ -350,18 +376,12 @@ class FoilGenerator:
 
     def find_starting_curve(self):
         # For tapered planform just find a curve with at least 5 points.
-        curr_distance = 5.0
-        prev_distance = None
-        while len(self.curve_point_list_for_distance(curr_distance)) > 5:
-            prev_distance = curr_distance
-            curr_distance /= 2
-        return prev_distance
+        return 1
 
     def generate_airfoil(self):
         prev_curve = None
         prev_z = 0
 
-        # TODO(zlieber): parametrize this
         i = self.find_starting_curve()
         count = 0
         while count < 2:
@@ -373,7 +393,12 @@ class FoilGenerator:
                 bottom_curve = [
                     (prev_curve[0][0], 0),
                     (prev_curve[-1][0], 0)]
-                self.writer.connect_curves(bottom_curve, i, prev_curve, i);
+                for idx in range(1, len(prev_curve)):
+                    self.writer.triangle(
+                        prev_curve[idx-1] + (i,),
+                        prev_curve[idx] + (i,),
+                        (prev_curve[-1][0], 0.0, i))
+                #self.writer.connect_curves(bottom_curve, i, prev_curve, i);
                 prev_z = i
                 my_step = numpy.amax([ y for (x, y) in prev_curve])
                 i += my_step
@@ -550,6 +575,8 @@ def printstl_airfoil(args):
 
     gen.generate_airfoil()
     writer.close()
+
+numpy.seterr(all='raise')
 
 parser = argparse.ArgumentParser(
     description='Generate airfoil data for plotting or 3D printing.')
