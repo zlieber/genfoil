@@ -90,11 +90,9 @@ class StlWriter:
             running_ratio = float(last_point_prev+1) / (last_point_next+1)
 
 class NacaCurve:
-    def __init__(self, chord, naca_spec=None, thickness=None, tail_height=0.0):
-        if (naca_spec is None) == (thickness is None):
-            raise "Either spec or thickness must be given"
+    def __init__(self, chord, curvespec, tail_height=0.0):
         self.chord = chord
-        self.t_param = self.getthickness(naca_spec, thickness, chord)
+        self.calc_thickness(curvespec, chord)
         self.c_param = chord
 
         # NACA curve does not converge to zero at the trailing edge.
@@ -102,26 +100,18 @@ class NacaCurve:
         # force that to happen.
         self.convergence_param = self.calcy(chord) - tail_height
 
-    def getthickness(self, naca4, thick, chord):
+    def calc_thickness(self, curvespec, chord):
         """Computes the thickness parameter.
 
         Based on various args."""
 
-        if (naca4 is not None and
-            thick is not None):
-           raise 'Do not specify both thickness and NACA4.'
-
-        if thick is not None:
-            t = float(thick) / float(chord) * 100
-        elif naca4 is not None:
-            if not naca4.startswith('00'):
-                raise ('Invalid curve: "%s". Only curves starting with 00 are supported at this point.' %
-                       naca4)
-            t = float(re.sub(r'^00', '', naca4))
+        if curvespec.startswith('00'):
+            t = float(re.sub(r'^00', '', curvespec))
         else:
-            raise 'Provide either thickness or NACA4 spec'
+            t = float(curvespec) / float(chord) * 100
 
-        return t / 100
+        self.t_param = t / 100
+        self.thickness = self.chord * self.t_param
 
     def calcy(self, x):
         """Calculate a single airfoil point.
@@ -264,13 +254,16 @@ class NacaCurve:
 
 class FoilGenerator:
 
-    def __init__(self, stl_writer, length, width, thickness):
+    def __init__(self, stl_writer, length, width, curvespec):
         self.writer = stl_writer
         self.length = length
         self.width = width
-        self.thickness = thickness
         self.box_length = 0
-        self.curvespec = None
+        self.curvespec = curvespec
+        if self.curvespec.startswith('00'):
+            self.thickness = float(re.sub(r'^00', '', curvespec)) / 100 * self.width
+        else:
+            self.thickness = float(curvespec)
         self.curve_res = 1
         self.planform_res = 1
         self.init_planform_params()
@@ -349,7 +342,9 @@ class FoilGenerator:
     def curve_point_list_for_distance(self, r):
         (left, right) = self.get_shape_from_to(r)
         chord = right - left
-        naca = NacaCurve(chord, None, self.thickness * chord / self.width, tail_height=1.0)
+        naca = NacaCurve(chord,
+                         str(self.thickness * chord / self.width),
+                         tail_height=1.0)
         my_curve = [ (x + left, y) for (x, y) in naca.curve(step) ]
         return my_curve
 
@@ -512,7 +507,7 @@ class TemplateGenerator:
             (prevx, prevy) = (x, y)
 
 def printcurve(args):
-    naca = NacaCurve(args.chord, args.naca4, args.thick)
+    naca = NacaCurve(args.chord, args.curvespec)
 
     prevx = -10
     prevy = 0.0
@@ -529,7 +524,7 @@ def printcurve(args):
 
 def printstl_template(args):
     writer = StlWriter(out)
-    naca = NacaCurve(args.chord, args.naca4, args.thick)
+    naca = NacaCurve(args.chord, args.curvespec)
     gen = TemplateGenerator(writer, naca, args.height, args.thickness)
     gen.generate_template(step, args.inv)
     writer.close()
@@ -539,7 +534,7 @@ def printstl_airfoil(args):
     gen = FoilGenerator(writer,
                         args.length,
                         args.width,
-                        args.thickness)
+                        args.curvespec)
     if args.box_length != 0:
         gen.set_raw_box(args.box_length,
                         args.box_thickness)
@@ -547,52 +542,100 @@ def printstl_airfoil(args):
     gen.generate_airfoil()
     writer.close()
 
-parser = argparse.ArgumentParser(description='Generate airfoil data for plotting or 3D printing.')
+parser = argparse.ArgumentParser(
+    description='Generate airfoil data for plotting or 3D printing.')
 
 sp = parser.add_subparsers()
 
-sp_start = sp.add_parser('airfoil', help='Produce a 3D STL shape of airfoil.')
-sp_start.add_argument('--length', type=float, help='Length of airfoil in mm, default is 1000', default=1000)
-sp_start.add_argument('--width', type=float, help='Width of airfoil in mm, default is 300', default=300)
-sp_start.add_argument('--thickness', type=float, help='Thickness of airfoil in mm, default is 25', default=25)
-sp_start.add_argument('--box_length', type=int, help='Leave unprocessed material of this length at the beginning', default=0)
-sp_start.add_argument('--box_thickness', type=int, help='Thickness of unprocessed material', default=13)
+sp_start = sp.add_parser('airfoil', help="""
+Produce a 3D STL shape of airfoil. Only top half is generated.
+Airfoil includes planform, taper and optionally a box of
+unprocessed material on one end.
+""")
+
+sp_start.add_argument('--length', type=float,
+                      help='Length of airfoil in mm, default is 1000',
+                      default=1000)
+sp_start.add_argument('--width', type=float,
+                      help='Width of airfoil in mm, default is 300',
+                      default=300)
+sp_start.add_argument('--resolution', metavar='density', type=float,
+                      default=1,
+                      help='Curve resolution in points/mm. Default is 1.')
+
+sp_start.add_argument('--curvespec', type=str, help="""
+If starts with "00", this is the NACA4 specification of the airfoil.
+If starts with a number [1-9], this is the maximum thickness of the
+airfoil in mm. Default is 12
+""", default='12')
+
+sp_start.add_argument('--box_length', type=int, help="""
+Leave unprocessed material of this length at the beginning
+""", default=0)
+
+sp_start.add_argument('--box_thickness', type=int,
+                      help='Thickness of unprocessed material', default=13)
 
 sp_start.set_defaults(func=printstl_airfoil)
 
-sp_start = sp.add_parser('template', help='Produce a 3D STL shape used for 3D-printing of templates.')
-sp_start.add_argument('--thickness', type=float, default=10, help='Thickness of the template in mm, default is 10.')
-sp_start.add_argument('--height', type=float, default=100, help='Height of the template in mm, default is 100.')
-sp_start.add_argument('--inv', action='store_true', default=False, help='Produce inverted template. Use when hand-sanding and checking. The non-inverted parts can be used for guiding the router.') 
+sp_start = sp.add_parser('template', help="""
+Produce a 3D STL shape used for 3D-printing of guides or templates.
+Templates are shaped so that they can be used to verify foil shape,
+or guide an instrument such as a router.
+""")
+
+sp_start.add_argument('--curvespec', type=str, help="""
+If starts with "00", this is the NACA4 specification of the airfoil.
+If starts with a number [1-9], this is the maximum thickness of the
+airfoil in mm. Default is 12
+""", default='12')
+
+sp_start.add_argument('--thickness', type=float, default=10,
+                      help='Thickness of the template in mm, default is 10.')
+sp_start.add_argument('--height', type=float, default=100,
+                      help='Height of the template in mm, default is 100.')
+sp_start.add_argument('--inv', action='store_true', default=False, help="""
+Produce inverted template. Use when hand-sanding and checking.
+The non-inverted parts can be used for guiding the router.
+""") 
+
+sp_start.add_argument('--resolution', metavar='density', type=float,
+                      default=1,
+                      help='Curve resolution in points/mm. Default is 1.')
+sp_start.add_argument('--chord', '-c', metavar='len', default=100, type=int,
+                      help='Chord length of the airfoil in mm. Default is 100')
 
 sp_start.set_defaults(func=printstl_template)
 
-sp_start = sp.add_parser('curve', help='Produce a set of x-y points for the curve, suitable for gnuplot. Use for printing the curve on paper and transferring to plywood.')
+sp_start = sp.add_parser('curve', help="""
+Produce a set of x-y points for the curve, suitable for gnuplot, exel
+or any plotting program. Use for printing the curve on paper and
+transferring to plywood.
+""")
+
 sp_start.set_defaults(func=printcurve)
 
-parser.add_argument('--naca4', metavar='curvespec', default='0012', type=str,
-                    help='NACA 4-digit curve spec. Only 00xx currently supported. Not required if thickness is specified. Default is 0012.')
+sp_start.add_argument('--chord', '-c', metavar='len', default=100, type=int,
+                      help='Chord length of the airfoil in mm. Default is 100')
+sp_start.add_argument('--curvespec', type=str, help="""
+If starts with "00", this is the NACA4 specification of the airfoil.
+If starts with a number [1-9], this is the maximum thickness of the
+airfoil in mm. Default is 12
+""", default='12')
+sp_start.add_argument('--resolution', metavar='density', type=float,
+                      default=1,
+                      help='Curve resolution in points/mm. Default is 1.')
+sp_start.add_argument('--padding', '-p', metavar='p', type=int, help="""
+Padding of the airfoil in mm. This is useful if you guide your
+instrument some distance from the surface. That distance is added
+to foil shape.
+""")
 
-parser.add_argument('--chord', '-c', metavar='len', default=100, type=int,
-                    help='Chord length of the airfoil in mm. Default is 100')
-
-parser.add_argument('--thick', '-t', metavar='t', type=int,
-                    help='Max thickness of the airfoil in mm. Not required if NACA spec is given.')
-
-parser.add_argument('--padding', '-p', metavar='p', type=int,
-                    help='Padding of the airfoil in mm.')
-
-parser.add_argument('--out', metavar='file', type=str,
-                    help='Output file to write. If not specified, stdout is used.')
-
-parser.add_argument('--resolution', metavar='density', type=float,
-                    default=1, help='Curve resolution in points/mm. Default is 1.')
+parser.add_argument('--out', '-o', metavar='file', type=str, help="""
+Output file to write. If not specified, stdout is used.
+""")
 
 args = parser.parse_args()
-
-if args.chord is None:
-    print ('Chord length must be specified')
-    sys.exit(1)
 
 step = 1.0 / args.resolution
 
