@@ -86,12 +86,23 @@ def findnext(func, x, step, start_delta, minx=None, maxx=None):
     return ((x + delta), func((x + delta)))
 
 class StlWriter:
-    def __init__(self, stream):
+    MM_INCH = 25.4
+
+    def __init__(self, stream, units):
         self.out = stream
         self.write_header()
+        self.transform_triangles = False
+        self.units = units
 
     def write_header(self):
         self.out.write("solid airfoil\n")
+
+    def convert(self, pt):
+        if self.units == 'mm':
+            return pt
+        if self.units == 'in':
+            return tuple(x / self.MM_INCH for x in pt)
+        raise "Unsupported unit: %s" % self.units
 
     def close(self):
         out.write("endsolid airfoil\n")
@@ -108,6 +119,9 @@ class StlWriter:
             return None
         return numpy.multiply(normal, 1.0/normal_len);
 
+    def setTransformTriangles(self):
+        self.transform_triangles = True
+
     def triangle(self, pt1, pt2, pt3):
         """Generates a single STL triangle based on 3 3D poitns.
         """
@@ -115,6 +129,19 @@ class StlWriter:
         un = self.unit_normal(pt1, pt2, pt3)
         if (un is None):
             return
+
+        # Convert axis
+        if (self.transform_triangles):
+            pt1 = (pt1[2], pt1[0], pt1[1])
+            pt2 = (pt2[2], pt2[0], pt2[1])
+            pt3 = (pt3[2], pt3[0], pt3[1])
+            un = (un[2], un[0], un[1])
+
+        # Convert units - but not for the normal vector.
+        # Its size is "1" in whatever units.
+        pt1 = self.convert(pt1)
+        pt2 = self.convert(pt2)
+        pt3 = self.convert(pt3)
 
         self.out.write("facet normal %f %f %f\n" % (un[0], un[1], un[2]))
         self.out.write("    outer loop\n")
@@ -311,7 +338,7 @@ class FoilGenerator:
             # TODO: proper errors
             raise 'Cannot optimize airfoil shape!'
 
-        self.planform_min_x = result.x
+        self.planform_min_x = result.x[0]
         self.planform_min_y = self.planform_func(self.planform_min_x)
         self.planform_max_y = 35
         (self.planform_max_x1, self.planform_max_x2) = self.foil_shape_xx(
@@ -542,7 +569,7 @@ def printcurve(args):
             out.write("%f %f\n" % (newx, newy))
 
 def printstl_template(args):
-    writer = StlWriter(out)
+    writer = StlWriter(out, args.stl_units)
     naca = NacaCurve(args.chord, args.curvespec,
                      resolution=args.resolution)
     gen = TemplateGenerator(writer, naca, args.height, args.thickness)
@@ -550,7 +577,13 @@ def printstl_template(args):
     writer.close()
 
 def printstl_airfoil(args):
-    writer = StlWriter(out)
+    writer = StlWriter(out, args.stl_units)
+    if args.axis != 'y' and args.axis != 'z':
+        raise "Unsupported axis. Only y and z are supported."
+
+    if args.axis == 'z':
+        writer.setTransformTriangles()
+
     gen = FoilGenerator(writer,
                         args.length,
                         args.width,
@@ -597,6 +630,13 @@ If starts with a number [1-9], this is the maximum thickness of the
 airfoil in mm. Default is 12
 """, default='12')
 
+sp_start.add_argument('--axis', type=str, default='y', help="""
+Specify axis that will contain the thickness of the airfoil. Default is y.
+""")
+sp_start.add_argument('--stl_units', type=str, default='mm', help="""
+Units to use when generating STL. Supported values are mm and in. Default is mm.
+""")
+
 sp_start.add_argument('--trail_width', type=float, help="""
 Width of the trailing edge in mm. Trailing edge cannot have zero
 thickness, and all cross-section curves are adjusted to converge
@@ -607,7 +647,7 @@ sp_start.add_argument('--box_length', type=int, help="""
 Leave unprocessed material of this length at the beginning
 """, default=0)
 
-sp_start.add_argument('--box_thickness', type=int,
+sp_start.add_argument('--box_thickness', type=float,
                       help='Thickness of unprocessed material', default=13)
 
 sp_start.set_defaults(func=printstl_airfoil)
@@ -632,6 +672,9 @@ sp_start.add_argument('--inv', action='store_true', default=False, help="""
 Produce inverted template. Use when hand-sanding and checking.
 The non-inverted parts can be used for guiding the router.
 """) 
+sp_start.add_argument('--stl_units', type=str, default='mm', help="""
+Units to use when generating STL. Supported values are mm and in. Default is mm.
+""")
 
 sp_start.add_argument('--resolution', type=float,
                       default=1,
