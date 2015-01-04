@@ -117,7 +117,7 @@ class StlWriter:
         normal_len = numpy.linalg.norm(normal)
         if (abs(normal_len) < 0.000001):
             return None
-        return numpy.multiply(normal, 1.0/normal_len);
+        return numpy.multiply(normal, 1.0/normal_len)
 
     def setTransformTriangles(self):
         self.transform_triangles = True
@@ -237,7 +237,7 @@ class NacaCurve:
         A4 = 0.2843
         A5 = -0.1015
 
-        x1 = x / self.c_param;
+        x1 = x / self.c_param
         return (self.t_param / 0.2 * self.c_param) * (
             A1 * x1 ** 0.5 +
             A2 * x1 +
@@ -333,16 +333,12 @@ class FoilGenerator:
         self.init_planform_params()
 
     def init_planform_params(self):
-        result = scipy.optimize.minimize(self.planform_func, [0.1])
-        if not result.success:
-            # TODO: proper errors
-            raise 'Cannot optimize airfoil shape!'
-
-        self.planform_min_x = result.x[0]
-        self.planform_min_y = self.planform_func(self.planform_min_x)
-        self.planform_max_y = 35
-        (self.planform_max_x1, self.planform_max_x2) = self.foil_shape_xx(
-            self.planform_max_y)
+        self.planform = Planform(
+            "Default",
+            "Default",
+            self.resolution,
+            lambda x: 1.0/x + 0.03 * x ** 4,
+            35)
 
     def set_raw_box(self, length, thickness):
         self.box_length = length
@@ -351,50 +347,25 @@ class FoilGenerator:
     def set_naca_curve(self, curvespec):
         self.curvespec = curvespec
 
-    def planform_func(self, x):
-        y = 1.0/x + 0.03 * x ** 4
-        return y
-
-    def foil_shape_xx(self, y):
-        min_func = lambda x: (self.planform_func(x) - y)**2
-
-        result = scipy.optimize.minimize(min_func, [10.e-10],
-                                         bounds=[(1.0e-25, self.planform_min_x)],
-                                         method='L-BFGS-B')
-        if not result.success:
-            print 'Cannot optimize left, y = %f' % y
-            return None
-        left_x = result.x[0]
-
-        result = scipy.optimize.minimize(min_func,
-                                         [self.planform_min_x + 0.1],
-                                         bounds=[(self.planform_min_x, None)],
-                                         method='L-BFGS-B')
-        if not result.success:
-            print 'Cannot optimize right, y = %f' % y
-            return None
-        right_x = result.x[0]
-        return (left_x, right_x)
-
     def foil_to_func_y(self, r):
         """Given distance from tip r, return y in func coords.
         """
         return (float(r) / self.length *
-                (self.planform_max_y - self.planform_min_y) +
-                self.planform_min_y)
+                (self.planform.top_y - self.planform.apex_y) +
+                self.planform.apex_y)
 
     def func_to_foil_x(self, x):
         """Given x in func coords, return distance from edge x.
         """
-        return ((x - self.planform_max_x1) /
-                (self.planform_max_x2 - self.planform_max_x1) *
+        return ((x - self.planform.top_x_left) /
+                (self.planform.top_x_right - self.planform.top_x_left) *
                 self.width)
 
     def func_to_foil_y(self, y):
         """Given y in func coords, return distance from tip r.
         """
-        return ((y - self.planform_min_y) /
-                (self.planform_max_y - self.planform_min_y) * self.length)
+        return ((y - self.planform.apex_y) /
+                (self.planform.top_y - self.planform.apex_y) * self.length)
 
     def get_shape_from_to(self, r):
         """Returns the pair (x1, x2) of coordinates for foil shape.
@@ -402,8 +373,14 @@ class FoilGenerator:
             r: Distance in mm from foil tip.
         """
         y = self.foil_to_func_y(r)
-        (left, right) = self.foil_shape_xx(y)
+        (left, right) = self.planform.foil_shape_xx(y)
         return (self.func_to_foil_x(left), self.func_to_foil_x(right))
+
+    def get_next_curve(self, prev_curve):
+        y = self.foil_to_func_y(prev_curve)
+        next_y = self.planform.get_next_curve(y)
+        result = self.func_to_foil_y(next_y)
+        return result
 
     def curve_point_list_for_distance(self, r):
         (left, right) = self.get_shape_from_to(r)
@@ -414,26 +391,11 @@ class FoilGenerator:
         my_curve = [ (x + left, y) for (x, y) in naca.curve() ]
         return my_curve
 
-    def find_starting_curve(self):
-        return 1
-
-    def find_next_curve(self, r):
-        y = self.foil_to_func_y(r)
-        (left, right) = self.foil_shape_xx(y)
-        (x1, y1) = findnext(self.planform_func, left, self.resolution, -1e-9, self.planform_max_x1)
-        (x2, y2) = findnext(self.planform_func, right, self.resolution, 1e-9, self.planform_max_x2)
-        if (y1 > y2):
-            (resx, resy) = (x2, y2)
-        else:
-            (resx, resy) = (x1, y1)
-
-        return self.func_to_foil_y(resy)
-
     def generate_airfoil(self):
         prev_curve = None
         prev_z = 0
 
-        z = self.find_starting_curve()
+        z = self.func_to_foil_y(self.planform.get_start_curve())
         while prev_z < z:
             next_curve = self.curve_point_list_for_distance(z)
             print "Curve: (%f, %f, %f) - (%f, %f, %f) (%d points)" % (next_curve[0] + (z,) + next_curve[-1] + (z,) + (len(next_curve),))
@@ -446,7 +408,7 @@ class FoilGenerator:
                         prev_curve[idx] + (z,),
                         (prev_curve[-1][0], 0.0, z))
                 prev_z = z
-                z = self.find_next_curve(z)
+                z = self.get_next_curve(z)
                 continue
             self.writer.connect_curves(prev_curve, prev_z, next_curve, z)
             self.writer.quad(
@@ -461,7 +423,7 @@ class FoilGenerator:
                 (prev_curve[0][0], 0.0, prev_z))
             prev_curve = next_curve
             prev_z = z
-            z = self.find_next_curve(z)
+            z = self.get_next_curve(z)
 
         left = next_curve[0][0]
         right = next_curve[-1][0]
@@ -506,7 +468,6 @@ class FoilGenerator:
             self.writer.connect_curves(next_curve, prev_z, bottom_straight, prev_z)
 
 class TemplateGenerator:
-
     def __init__(self, stl_writer, naca, height, thickness):
         self.writer = stl_writer
         self.naca = naca
@@ -550,6 +511,74 @@ class TemplateGenerator:
             (top_curve[-1][0], 0, 0),
             (top_curve[-1][0], 0, self.thickness),
             (top_curve[0][0], 0, self.thickness))
+
+class Planform:
+    def __init__(self, name, description, resolution,
+                 func_left, top_y,
+                 func_right=None):
+        self.name = name
+        self.description = description
+        self.resolution = resolution
+        self.func_left = func_left
+        self.func_right = func_right
+        self.top_y = top_y
+        if func_right is None:
+            (self.apex_x, self.apex_y) = self.calc_apex()
+            self.func_right = func_left
+        else:
+            self.bottom_y = 0
+            self.apex_y = 0
+            # TODO: set self.apex_x to enable left / right functions
+
+        (self.top_x_left, self.top_x_right) = self.foil_shape_xx(self.top_y)
+        self.length = self.top_y - self.apex_y
+        if func_right is None:
+            self.bottom_y = self.get_next_curve(self.apex_y)
+
+    def calc_apex(self):
+        result = scipy.optimize.minimize(self.func_left, [0.1])
+        if not result.success:
+            # TODO: proper errors
+            raise 'Cannot optimize airfoil shape!'
+        return (result.x[0], self.func_left(result.x[0]))
+
+    def get_start_curve(self):
+        return self.bottom_y
+
+    def foil_shape_xx(self, y):
+        min_func = lambda x: (self.func_left(x) - y)**2
+
+        result = scipy.optimize.minimize(min_func, [10.e-10],
+                                         bounds=[(1.0e-25, self.apex_x)],
+                                         method='L-BFGS-B')
+        if not result.success:
+            print 'Cannot optimize left, y = %f' % y
+            return None
+        left_x = result.x[0]
+
+        min_func = lambda x: (self.func_right(x) - y)**2
+        result = scipy.optimize.minimize(min_func,
+                                         [self.apex_x + 1.0e-1],
+                                         bounds=[(self.apex_x, None)],
+                                         method='L-BFGS-B')
+        if not result.success:
+            print 'Cannot optimize right, y = %f' % y
+            return None
+        right_x = result.x[0]
+        return (left_x, right_x)
+
+    def get_next_curve(self, prev_curve):
+        if prev_curve == self.apex_y:
+            (left, right) = (self.apex_x, self.apex_x)
+        else:
+            (left, right) = self.foil_shape_xx(prev_curve)
+        (x1, y1) = findnext(self.func_left, left, self.resolution, -1e-9, self.top_x_left)
+        (x2, y2) = findnext(self.func_right, right, self.resolution, 1e-9, self.top_x_right)
+        if (y1 > y2):
+            (resx, resy) = (x2, y2)
+        else:
+            (resx, resy) = (x1, y1)
+        return resy
 
 def printcurve(args):
     naca = NacaCurve(args.chord, args.curvespec,
