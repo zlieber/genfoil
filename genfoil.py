@@ -216,7 +216,7 @@ class NacaCurve:
         if curvespec.startswith('00'):
             t = float(re.sub(r'^00', '', curvespec))
         else:
-            t = float(curvespec) / float(chord) * 100
+            t = float(curvespec) / float(chord) * 100 * 2
 
         self.t_param = t / 100
         self.thickness = self.chord * self.t_param
