@@ -6,6 +6,7 @@ import sys
 import math
 import numpy
 import scipy.optimize
+import textwrap
 
 def derivative(func, x):
     epsilon = 1e-9
@@ -317,8 +318,8 @@ class NacaCurve:
 
 class FoilGenerator:
     def __init__(self, stl_writer, length,
-                 width, curvespec, resolution=1.0,
-                 trail_width=1.0):
+                 width, curvespec, planform,
+                 resolution=1.0, trail_width=1.0):
         self.writer = stl_writer
         self.resolution = resolution
         self.length = length
@@ -330,15 +331,7 @@ class FoilGenerator:
             self.thickness = float(re.sub(r'^00', '', curvespec)) / 100 * self.width
         else:
             self.thickness = float(curvespec)
-        self.init_planform_params()
-
-    def init_planform_params(self):
-        self.planform = Planform(
-            "Default",
-            "Default",
-            self.resolution,
-            lambda x: 1.0/x + 0.03 * x ** 4,
-            35)
+        self.planform = planform
 
     def set_raw_box(self, length, thickness):
         self.box_length = length
@@ -378,7 +371,7 @@ class FoilGenerator:
 
     def get_next_curve(self, prev_curve):
         y = self.foil_to_func_y(prev_curve)
-        next_y = self.planform.get_next_curve(y)
+        next_y = self.planform.get_next_curve(y, self.resolution)
         result = self.func_to_foil_y(next_y)
         return result
 
@@ -395,8 +388,8 @@ class FoilGenerator:
         prev_curve = None
         prev_z = 0
 
-        z = self.func_to_foil_y(self.planform.get_start_curve())
-        while prev_z < z:
+        z = self.func_to_foil_y(self.planform.get_start_curve(self.resolution))
+        while prev_z + 0.001 < z or prev_curve is None:
             next_curve = self.curve_point_list_for_distance(z)
             print "Curve: (%f, %f, %f) - (%f, %f, %f) (%d points)" % (next_curve[0] + (z,) + next_curve[-1] + (z,) + (len(next_curve),))
             if prev_curve is None:
@@ -513,27 +506,38 @@ class TemplateGenerator:
             (top_curve[0][0], 0, self.thickness))
 
 class Planform:
-    def __init__(self, name, description, resolution,
+    def __init__(self, name, description,
                  func_left, top_y,
                  func_right=None):
         self.name = name
         self.description = description
-        self.resolution = resolution
         self.func_left = func_left
         self.func_right = func_right
         self.top_y = top_y
         if func_right is None:
             (self.apex_x, self.apex_y) = self.calc_apex()
             self.func_right = func_left
+            self.dual = False
         else:
             self.bottom_y = 0
             self.apex_y = 0
-            # TODO: set self.apex_x to enable left / right functions
-
+            self.apex_x = self.calc_apex_dual()
+            self.dual = True
         (self.top_x_left, self.top_x_right) = self.foil_shape_xx(self.top_y)
-        self.length = self.top_y - self.apex_y
-        if func_right is None:
-            self.bottom_y = self.get_next_curve(self.apex_y)
+
+
+    def find_root(self, func):
+        min_func = lambda x: func(x)**2
+        result = scipy.optimize.minimize(min_func, [0.1])
+        if not result.success:
+            # TODO: proper errors
+            raise "Cannot find root"
+        return result.x[0]
+
+    def calc_apex_dual(self):
+        left_root = self.find_root(self.func_left)
+        right_root = self.find_root(self.func_right)
+        return (left_root + right_root) / 2
 
     def calc_apex(self):
         result = scipy.optimize.minimize(self.func_left, [0.1])
@@ -542,8 +546,11 @@ class Planform:
             raise 'Cannot optimize airfoil shape!'
         return (result.x[0], self.func_left(result.x[0]))
 
-    def get_start_curve(self):
-        return self.bottom_y
+    def get_start_curve(self, resolution):
+        if self.dual:
+            return 0
+        else:
+            return self.get_next_curve(self.apex_y, resolution)
 
     def foil_shape_xx(self, y):
         min_func = lambda x: (self.func_left(x) - y)**2
@@ -567,13 +574,13 @@ class Planform:
         right_x = result.x[0]
         return (left_x, right_x)
 
-    def get_next_curve(self, prev_curve):
+    def get_next_curve(self, prev_curve, resolution):
         if prev_curve == self.apex_y:
             (left, right) = (self.apex_x, self.apex_x)
         else:
             (left, right) = self.foil_shape_xx(prev_curve)
-        (x1, y1) = findnext(self.func_left, left, self.resolution, -1e-9, self.top_x_left)
-        (x2, y2) = findnext(self.func_right, right, self.resolution, 1e-9, self.top_x_right)
+        (x1, y1) = findnext(self.func_left, left, resolution, -1e-9, self.top_x_left)
+        (x2, y2) = findnext(self.func_right, right, resolution, 1e-9, self.top_x_right)
         if (y1 > y2):
             (resx, resy) = (x2, y2)
         else:
@@ -613,10 +620,13 @@ def printstl_airfoil(args):
     if args.axis == 'z':
         writer.setTransformTriangles()
 
+    planform = PLANFORMS[args.planform]
+
     gen = FoilGenerator(writer,
                         args.length,
                         args.width,
                         args.curvespec,
+                        planform,
                         trail_width=args.trail_width,
                         resolution=args.resolution)
     if args.box_length != 0:
@@ -626,7 +636,52 @@ def printstl_airfoil(args):
     gen.generate_airfoil()
     writer.close()
 
+def print_planforms(args):
+    print """
+Planform is the shape of a rudder when laid flat on
+the ground and looked at from above. These planforms
+are currently supported:
+
+"""
+    for (name, planform) in PLANFORMS.items():
+        print name.ljust(10).rjust(15)
+        lines = textwrap.wrap(planform.description, 40)
+        for l in lines:
+            print l.lstrip().ljust(60).rjust(80)
+
 numpy.seterr(all='raise')
+
+PLANFORMS = {}
+
+# Init planforms
+planform = Planform(
+    "ellipse",
+    """
+Roughly elliptical-shaped tip. Leading edge nearly vertical,
+trailing edge somewhat at an angle. Represented by function
+1/x + 0.03 * x^4, until maximum value of y=35.
+""",
+    lambda x: 1.0/x + 0.03 * x ** 4,
+    35)
+PLANFORMS[planform.name] = planform
+
+planform = Planform(
+    "straight",
+    """
+Vertical planform, no rounded tip.
+""",
+    lambda x: -1e3*(x-1), 1,
+    func_right=lambda x: 1e3*(x-2))
+PLANFORMS[planform.name] = planform
+
+planform = Planform(
+    "sweepback",
+    """
+Straight edges, swept back planform, slightly tapered.
+""",
+    lambda x: -5*(x-1), 5,
+    func_right=lambda x: -10*(x-2))
+PLANFORMS[planform.name] = planform
 
 parser = argparse.ArgumentParser(
     description='Generate airfoil data for plotting or 3D printing.')
@@ -645,6 +700,11 @@ sp_start.add_argument('--length', type=float,
 sp_start.add_argument('--width', type=float,
                       help='Width of airfoil in mm, default is 300',
                       default=300)
+sp_start.add_argument('--planform', type=str, default='ellipse',
+                      help="""
+Specifies the planform to use. Run "genfoil.py planform" to see the
+complete list of supported planforms. Default is 'ellipse'.
+""")
 sp_start.add_argument('--resolution', type=float,
                       default=1,
                       help="""
@@ -742,6 +802,11 @@ Padding of the airfoil in mm. This is useful if you guide your
 instrument some distance from the surface. That distance is added
 to foil shape.
 """)
+
+sp_start = sp.add_parser('planform', help="""
+Show supported planforms.
+""")
+sp_start.set_defaults(func=print_planforms)
 
 parser.add_argument('--out', '-o', metavar='file', type=str, help="""
 Output file to write. If not specified, stdout is used.
