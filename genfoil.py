@@ -507,13 +507,14 @@ class TemplateGenerator:
 
 class Planform:
     def __init__(self, name, description,
-                 func_left, top_y,
+                 func_left, top_y, range_x,
                  func_right=None):
         self.name = name
         self.description = description
         self.func_left = func_left
         self.func_right = func_right
         self.top_y = top_y
+        self.range_x = range_x
         if func_right is None:
             (self.apex_x, self.apex_y) = self.calc_apex()
             self.func_right = func_left
@@ -524,7 +525,6 @@ class Planform:
             self.apex_x = self.calc_apex_dual()
             self.dual = True
         (self.top_x_left, self.top_x_right) = self.foil_shape_xx(self.top_y)
-
 
     def find_root(self, func):
         min_func = lambda x: func(x)**2
@@ -555,23 +555,22 @@ class Planform:
     def foil_shape_xx(self, y):
         min_func = lambda x: (self.func_left(x) - y)**2
 
-        result = scipy.optimize.minimize(min_func, [10.e-10],
-                                         bounds=[(1.0e-25, self.apex_x)],
-                                         method='L-BFGS-B')
+        result = scipy.optimize.minimize_scalar(min_func,
+                                                bounds=[self.range_x[0], self.apex_x],
+                                                method='bounded')
         if not result.success:
             print 'Cannot optimize left, y = %f' % y
             return None
-        left_x = result.x[0]
+        left_x = result.x
 
         min_func = lambda x: (self.func_right(x) - y)**2
-        result = scipy.optimize.minimize(min_func,
-                                         [self.apex_x + 1.0e-1],
-                                         bounds=[(self.apex_x, None)],
-                                         method='L-BFGS-B')
+        result = scipy.optimize.minimize_scalar(min_func,
+                                                bounds=[self.apex_x, self.range_x[1]],
+                                                method='bounded')
         if not result.success:
             print 'Cannot optimize right, y = %f' % y
             return None
-        right_x = result.x[0]
+        right_x = result.x
         return (left_x, right_x)
 
     def get_next_curve(self, prev_curve, resolution):
@@ -662,7 +661,8 @@ trailing edge somewhat at an angle. Represented by function
 1/x + 0.03 * x^4, until maximum value of y=35.
 """,
     lambda x: 1.0/x + 0.03 * x ** 4,
-    35)
+    35,
+    (1.0e-25, 6))
 PLANFORMS[planform.name] = planform
 
 planform = Planform(
@@ -670,7 +670,8 @@ planform = Planform(
     """
 Vertical planform, no rounded tip.
 """,
-    lambda x: -1e3*(x-1), 1,
+    lambda x: -1000*(x-1), 1,
+    (0, 2.1),
     func_right=lambda x: 1e3*(x-2))
 PLANFORMS[planform.name] = planform
 
@@ -680,7 +681,17 @@ planform = Planform(
 Straight edges, swept back planform, slightly tapered.
 """,
     lambda x: -5*(x-1), 5,
+    (0, 2.1),
     func_right=lambda x: -10*(x-2))
+PLANFORMS[planform.name] = planform
+
+planform = Planform(
+    "sine",
+    """
+Shaped as a stretched sine function.
+""",
+    lambda x: math.cos(x) + 1, 0.5,
+    (0, 2*math.pi))
 PLANFORMS[planform.name] = planform
 
 parser = argparse.ArgumentParser(
