@@ -94,6 +94,7 @@ class StlWriter:
         self.write_header()
         self.transform_triangles = False
         self.units = units
+        self.mirror_max = None
 
     def write_header(self):
         self.out.write("solid airfoil\n")
@@ -120,6 +121,9 @@ class StlWriter:
             return None
         return numpy.multiply(normal, 1.0/normal_len)
 
+    def set_mirror(self, max_value):
+        self.mirror_max = max_value
+
     def setTransformTriangles(self):
         self.transform_triangles = True
 
@@ -130,6 +134,12 @@ class StlWriter:
         un = self.unit_normal(pt1, pt2, pt3)
         if (un is None):
             return
+
+        # Mirror, if needed
+        if (self.mirror_max is not None):
+            pt1 = (pt1[0], pt1[1], self.mirror_max - pt1[2])
+            pt2 = (pt2[0], pt2[1], self.mirror_max - pt2[2])
+            pt3 = (pt3[0], pt3[1], self.mirror_max - pt3[2])
 
         # Convert axis
         if (self.transform_triangles):
@@ -619,6 +629,10 @@ def printstl_airfoil(args):
     if args.axis == 'z':
         writer.setTransformTriangles()
 
+    if args.mirror:
+        max_length = args.length + args.box_length
+        writer.set_mirror(max_length)
+
     planform = PLANFORMS[args.planform]
 
     gen = FoilGenerator(writer,
@@ -733,6 +747,11 @@ airfoil in mm. Default is 12
 sp_start.add_argument('--axis', type=str, default='y', help="""
 Specify axis that will contain the thickness of the airfoil. Default is y.
 """)
+
+sp_start.add_argument('--mirror', action='store_const', const=True, help="""
+If specified, a mirror image of the airfoil will be created.
+""")
+
 sp_start.add_argument('--stl_units', type=str, default='mm', help="""
 Units to use when generating STL. Supported values are mm and in. Default is mm.
 """)
