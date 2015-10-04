@@ -64,12 +64,11 @@ def findnext(func, x, step, start_delta, minx=None, maxx=None):
 
     prevdelta = 0
     delta = start_delta
-    curr = x
     done = False
 
     while not done:
         d = angular_distance(func, x, x + delta)
-        if abs((d - step) / step) < 0.0001:
+        if abs((d - step) / step) < (float(step) / 100):
             done = True
         else:
             if d < step:
@@ -398,8 +397,10 @@ class FoilGenerator:
         prev_curve = None
         prev_z = 0
 
-        z = self.func_to_foil_y(self.planform.get_start_curve(self.resolution))
-        while prev_z + 0.001 < z or prev_curve is None:
+        sc = self.planform.get_start_curve(self.resolution)
+        z = self.func_to_foil_y(sc)
+        max_z = self.func_to_foil_y(self.planform.top_y)
+        while prev_z + 0.00002  < z or prev_curve is None:
             next_curve = self.curve_point_list_for_distance(z)
             print "Curve: (%f, %f, %f) - (%f, %f, %f) (%d points)" % (next_curve[0] + (z,) + next_curve[-1] + (z,) + (len(next_curve),))
             if prev_curve is None:
@@ -525,6 +526,14 @@ class Planform:
         self.func_right = func_right
         self.top_y = top_y
         self.range_x = range_x
+        self.apex_x = None
+        self.apex_y = None
+        self.top_x_left = None
+        self.top_x_right = None
+
+    def calc_init():
+        if self.apex_x is not None:
+            return
         if func_right is None:
             (self.apex_x, self.apex_y) = self.calc_apex()
             self.func_right = func_left
@@ -537,6 +546,7 @@ class Planform:
         (self.top_x_left, self.top_x_right) = self.foil_shape_xx(self.top_y)
 
     def find_root(self, func):
+        self.calc_init
         min_func = lambda x: func(x)**2
         result = scipy.optimize.minimize(min_func, [0.1])
         if not result.success:
@@ -545,11 +555,13 @@ class Planform:
         return result.x[0]
 
     def calc_apex_dual(self):
+        self.calc_init
         left_root = self.find_root(self.func_left)
         right_root = self.find_root(self.func_right)
         return (left_root + right_root) / 2
 
     def calc_apex(self):
+        self.calc_init
         result = scipy.optimize.minimize(self.func_left, [0.1])
         if not result.success:
             # TODO: proper errors
@@ -557,12 +569,14 @@ class Planform:
         return (result.x[0], self.func_left(result.x[0]))
 
     def get_start_curve(self, resolution):
+        self.calc_init
         if self.dual:
             return 0
         else:
             return self.get_next_curve(self.apex_y, resolution)
 
     def foil_shape_xx(self, y):
+        self.calc_init
         min_func = lambda x: (self.func_left(x) - y)**2
 
         result = scipy.optimize.minimize_scalar(min_func,
@@ -584,12 +598,15 @@ class Planform:
         return (left_x, right_x)
 
     def get_next_curve(self, prev_curve, resolution):
+        self.calc_init
         if prev_curve == self.apex_y:
             (left, right) = (self.apex_x, self.apex_x)
         else:
             (left, right) = self.foil_shape_xx(prev_curve)
         (x1, y1) = findnext(self.func_left, left, resolution, -1e-9, self.top_x_left)
+        print (x1, y1)
         (x2, y2) = findnext(self.func_right, right, resolution, 1e-9, self.top_x_right)
+        print (x2, y2)
         if (y1 > y2):
             (resx, resy) = (x2, y2)
         else:
@@ -666,9 +683,31 @@ numpy.seterr(all='raise')
 
 PLANFORMS = {}
 
+def ell(xw, yw):
+    def func(x):
+        try:
+            res = yw * (1 - math.sqrt(1 - ( (x**2) / (xw**2))))
+            return res
+        except:
+            return yw * 100
+    return func
+
 # Init planforms
+e_planform = Planform(
+    "elliptic",
+    """
+Planform for elliptical loading. Generated using ellipse equation.
+""",
+    None,
+    None,
+    None,
+    None)
+
+PLANFORMS[e_planform.name] = e_planform
+#    lambda x: 10 * math.sqrt(1 - (x**2 / 4)),
+
 planform = Planform(
-    "ellipse",
+    "rounded",
     """
 Roughly elliptical-shaped tip. Leading edge nearly vertical,
 trailing edge somewhat at an angle. Represented by function
@@ -848,6 +887,18 @@ if args.out is not None:
     out = open(args.out, 'w')
 else:
     out = sys.stdout
+
+# Fix up elliptic planform
+if args.width is not None and args.length is not None:
+    e_planform.func_left = ell(args.width * 0.3, args.length)
+    e_planform.func_right = ell(args.width * 0.7, args.length)
+    e_planform.top_y = args.length
+    e_planform.range_x = (-args.width * 0.3, args.width * 0.7)
+    e_planform.apex_x = 0
+    e_planform.apex_y = 0
+    e_planform.bottom_y = 0
+    e_planform.dual = True
+    (e_planform.top_x_left, e_planform.top_x_right) = e_planform.foil_shape_xx(e_planform.top_y)
 
 args.func(args)
 
